@@ -223,5 +223,27 @@ def sync_prompt() -> None:
     click.echo(f"Prompt synced to LangFuse: {LANGFUSE_PROMPT_NAME} v{prompt.version}")
 
 
+@cli.command(name="memory-stats")
+def memory_stats() -> None:
+    """Show vector-store memory stats and estimated token savings vs. buffer memory."""
+    from memory.vector_store import VectorStoreMemory
+
+    mem = VectorStoreMemory()
+    s = mem.stats()
+    click.echo(f"Vector store: {mem.store_dir} ({s['on_disk_bytes']} bytes on disk)")
+    click.echo(f"Total turns stored: {s['turns']}")
+    click.echo(f"Embedding: {s['embedder']} (dim {s['embedding_dim']})")
+    if s["turns"]:
+        click.echo(
+            f"Estimated tokens per turn — buffer (all {s['turns']} turns): "
+            f"{s['buffer_tokens']}, vector (top-{mem.k}): {s['vector_tokens']}"
+        )
+        click.echo(
+            f"Estimated savings: {s['estimated_savings']} tokens ({s['savings_pct']}%)"
+        )
+    else:
+        click.echo("(no turns stored yet — run `agent chat` to populate the store)")
+
+
 if __name__ == "__main__":
     cli()

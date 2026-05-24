@@ -84,27 +84,42 @@ def _build_llm_and_tools() -> tuple[ChatAnthropic, list]:
 
 
 def build_chat_agent(
-    memory: ConversationBufferMemory | None = None,
+    memory=None,
     prompt_name: str = "chat_agent",
+    use_vector_memory: bool = True,
+    use_buffer_memory: bool = False,
 ) -> AgentExecutor:
     """ReAct executor WITH conversation memory, prompt loaded from prompts/.
 
     Used by `chat` (chat_agent prompt) and `research` (research_agent prompt): each
-    turn's input/output is saved and replayed into the {chat_history} slot. Pass a
-    `memory` to use an isolated buffer (e.g. per-session in the API); the default is
-    the file-backed buffer shared across CLI runs. The chosen prompt must include a
-    {chat_history} placeholder.
+    turn's input/output is saved and the relevant history replayed into the
+    {chat_history} slot. The chosen prompt must include a {chat_history} placeholder.
+
+    Memory selection (when `memory` is not passed explicitly):
+      - default: VectorStoreMemory — retrieves the top-k semantically similar past
+        turns, keeping the prompt bounded as the conversation grows.
+      - use_buffer_memory=True (or use_vector_memory=False): the file-backed
+        ConversationBufferMemory, which replays the full history (for comparison).
+    Pass an explicit `memory` (e.g. the API's per-session buffer) to override both.
 
     verbose=True prints the Thought/Action/Observation loop; the explicit hooks are
     attached per-call via config in stream_answer (constructor callbacks don't
     propagate through astream_events).
     """
+    if memory is None:
+        if use_buffer_memory or not use_vector_memory:
+            memory = build_memory()
+        else:
+            from memory.vector_store import VectorStoreMemory  # lazy: heavy-ish import
+
+            memory = VectorStoreMemory()
+
     llm, tools = _build_llm_and_tools()
     agent = create_react_agent(llm, tools, _react_prompt(prompt_name))
     return AgentExecutor(
         agent=agent,
         tools=tools,
-        memory=memory or build_memory(),
+        memory=memory,
         verbose=True,
         handle_parsing_errors=True,
     )

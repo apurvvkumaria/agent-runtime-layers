@@ -1,17 +1,17 @@
 # langchain-agent-layers
 
-A small ReAct research agent — **Claude + LangChain** — built up in **eleven deliberate
+A small ReAct research agent — **Claude + LangChain** — built up in **twelve deliberate
 layers**, each adding one agent-runtime capability. It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
 calling, memory, streaming, lifecycle hooks, production tracing, a CLI, a REST API,
-tests + evals, MCP (Model Context Protocol) in both directions, and file/LangFuse-based
-prompt management.
+tests + evals, MCP (Model Context Protocol) in both directions, file/LangFuse-based
+prompt management, and vector-store memory.
 
 ```bash
 uv run python agent.py ask "What is a Merkle tree?"
 ```
 
-## The eleven layers
+## The twelve layers
 
 The agent was built incrementally; each layer adds one capability on top of the last.
 
@@ -28,6 +28,7 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **9 — Testing + evals** | Automated quality gate | pytest (`tests/`) for deterministic plumbing with the LLM stubbed; evals (`evals/`) for probabilistic agent behavior — tool/answer assertions and LLM-as-judge relevance scores written to LangFuse. Tests answer "does it work?"; evals answer "is the answer good?" |
 | **10 — MCP integration** | Speak MCP both ways | **Client:** wrap the official filesystem MCP server as the `filesystem` tool (sandboxed to `docs/`). **Server:** expose `ask_agent` / `get_storage_metrics` / `calculate` over MCP via FastMCP (`agent mcp-serve`). As a client the agent consumes any MCP server as a tool; as a server the whole agent becomes a tool other MCP clients can call. |
 | **11 — Prompt management** | Prompts as managed assets | System prompts live in `prompts/*.md` (loaded by `load_prompt`), not string literals in code. The single-shot prompt is fetched from LangFuse first (`react-agent-prompt`) with the local file as fallback; `agent sync-prompt` pushes the local copy to LangFuse as a new version. Prompts become reviewable in diffs and versionable without a redeploy. |
+| **12 — Vector-store memory** | Bounded memory via semantic retrieval | `build_chat_agent` defaults to `VectorStoreMemory`: each turn is embedded and stored, and only the top-k *similar* past turns are replayed into the prompt — so history tokens stay bounded as the conversation grows (vs. buffer memory, which re-sends everything). `agent memory-stats` and `evals/memory_comparison.py` quantify it (~65% fewer history tokens at 8+ turns). |
 
 ## How it works
 
@@ -59,6 +60,7 @@ an `Observation:` and re-prompts — looping until the model emits `Final Answer
 | `pytest` | Unit/integration test runner (`tests/`). |
 | `deepeval` | The eval framework (`evals/`) — `LLMTestCase`, `ToolCorrectnessMetric`, a custom substring metric, and `AnswerRelevancyMetric` judged by Claude. |
 | `mcp` | Model Context Protocol SDK — client (consume the filesystem server) and server (expose the agent as MCP tools). |
+| `numpy` | Vectors + cosine similarity for the vector-store memory. |
 
 Managed with [uv](https://docs.astral.sh/uv/). Requires Python 3.13+.
 
@@ -92,6 +94,7 @@ uv run python agent.py history             # last 10 turns from saved memory
 uv run python agent.py serve --port 8000   # start the FastAPI REST server
 uv run python agent.py mcp-serve --port 3000  # start the MCP server (SSE)
 uv run python agent.py sync-prompt         # push local single-shot prompt to LangFuse
+uv run python agent.py memory-stats        # vector-store turns + estimated token savings
 uv run python agent.py test                # run tests + evals, print a summary
 ```
 
@@ -157,6 +160,7 @@ version. Editing a prompt is a behavior change — re-run `agent test` after.
 | `agent.py` | The Click CLI; `serve` runs the API, `mcp-serve` runs the MCP server, `test` runs the quality gate. |
 | `mcp_integration/` | MCP both ways — `client.py` (filesystem server → `filesystem` tool), `server.py` (agent → MCP tools). Named `mcp_integration` to avoid shadowing the `mcp` SDK. |
 | `prompts/` | System prompts as markdown (`single_shot_agent`, `chat_agent`, `research_agent`, `storage_agent`) + `loader.py`. |
+| `memory/` | `vector_store.py` — `VectorStoreMemory` with top-k semantic retrieval + a torch-free hashing embedder. |
 | `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
 | `tests/` | pytest suite — tool units + API integration (LLM stubbed). |
 | `evals/` | Real-agent behavioral evals: deterministic cases + LLM-as-judge scoring. |
@@ -182,6 +186,11 @@ Import direction is one-way: `tools`/`hooks` ← `core` ← `agent`/`api`/`mcp_i
   pinned `>=8.1,<8.4`. Metrics judge with Claude via a custom `DeepEvalBaseLLM` (no OpenAI key).
 - **MCP naming:** the integration lives in `mcp_integration/`, not `mcp/` — a top-level `mcp/`
   directory would shadow the installed `mcp` SDK and break `from mcp import ...`.
+- **Vector memory embedder:** on this dev setup (x86_64 Python under Rosetta), neither `torch`
+  nor `onnxruntime` has a macOS-x86_64/Python-3.13 wheel, so `sentence-transformers` and
+  `chromadb` can't install. Layer 12 ships a torch-free `HashingEmbedder` + a local JSON store
+  instead; the embedder/store are isolated swap-in points for sentence-transformers + ChromaDB
+  on a native arm64 toolchain.
 
 This is a learning project, not a production system — the `storage_metrics` tool returns
 synthetic data, and answers depend on live web search.

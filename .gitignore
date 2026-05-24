@@ -22,3 +22,7 @@ report.md
 .pytest_cache/
 .deepeval/
 .deepeval*.json
+
+# Vector store memory (persisted embeddings)
+vector_store/
+chroma_db/
