@@ -6,12 +6,13 @@ A hands-on learning project for understanding **agent runtime patterns** by buil
 small research agent from scratch. The goal is to build intuition for how agent frameworks
 actually work under the hood, not to ship a product.
 
-The agent has two front doors — a Click CLI (`agent.py`) and a FastAPI REST server
-(`api.py`) — over one shared ReAct core (`core.py`): it reasons with Claude, calls tools
-(web search, a calculator, and a fake storage-metrics backend) to gather facts, remembers
+The agent has three front doors — a Click CLI (`agent.py`), a FastAPI REST server
+(`api.py`), and an MCP server (`mcp_integration/server.py`) — over one shared ReAct core
+(`core.py`): it reasons with Claude, calls tools (web search, a calculator, a fake
+storage-metrics backend, and an MCP-backed filesystem reader) to gather facts, remembers
 the conversation across turns, streams its final answer token-by-token, and emits both
 print-based hooks and structured LangFuse traces. Every reasoning step is visible. It was
-built up in nine deliberate layers (see below), each adding one runtime capability.
+built up in ten deliberate layers (see below), each adding one runtime capability.
 
 ## How to run it
 
@@ -26,6 +27,7 @@ uv run python agent.py calc "150 * 223.48"             # direct calculator, no L
 uv run python agent.py metrics prod-us-east-1          # direct metrics, no LLM
 uv run python agent.py history             # last 10 turns from saved memory
 uv run python agent.py serve --port 8000   # start the FastAPI REST server
+uv run python agent.py mcp-serve --port 3000  # start the MCP server (SSE)
 uv run python agent.py test                # run tests + evals, print a summary
 ```
 
@@ -78,6 +80,7 @@ This project uses **uv** for dependency and environment management. Add deps wit
 | `uvicorn` | ASGI server that runs the FastAPI app (`agent serve`). |
 | `pytest` | The unit/integration test runner (`tests/`). |
 | `deepeval` | The eval framework (`evals/`): `LLMTestCase`, `ToolCorrectnessMetric`, a custom `SubstringMetric`, and `AnswerRelevancyMetric` (judged by Claude via a custom `DeepEvalBaseLLM`). Pinned to 4.x for LangChain 1.x compatibility (see note below). |
+| `mcp` | The Model Context Protocol SDK — both the client (consume the filesystem server) and the server (expose the agent as MCP tools). |
 
 ## Project structure
 
@@ -94,13 +97,15 @@ Nothing imports `agent`.
 | `agent.py` | The Click CLI only: `chat`, `ask`, `research`, `calc`, `metrics`, `history`, `serve`, `test`. The REPL (`converse`) lives here. Imports `core` + `api`. |
 | `tests/` | pytest suite — `test_tools.py` (unit), `test_api.py` (FastAPI TestClient integration, LLM stubbed), `conftest.py` (fixtures: `client`, `stub_llm`). No real API calls. |
 | `evals/` | Behavioral evals via **deepeval** (real LLM calls): `deterministic_evals.py` (`LLMTestCase` + `ToolCorrectnessMetric` + custom `SubstringMetric`), `langfuse_evals.py` (`AnswerRelevancyMetric` scored onto LangFuse traces), `judge.py` (Claude-backed `DeepEvalBaseLLM` judge), `run_all.py` (runs pytest + both eval suites and prints a summary). |
+| `mcp_integration/` | MCP, both directions. `client.py` wraps the official filesystem MCP server as the `filesystem` LangChain tool (sandboxed to `docs/`); `server.py` exposes `ask_agent` / `get_storage_metrics` / `calculate` as MCP tools via FastMCP. Named `mcp_integration`, not `mcp`, to avoid shadowing the `mcp` SDK. |
+| `docs/` | Markdown read by the `filesystem` tool — `openShell_overview.md`, `sla_thresholds.md`, `agent_patterns.md`. The MCP filesystem server's only allowed directory. |
 | `.env.example` | Committed template of required env vars (`ANTHROPIC_API_KEY`, `LANGFUSE_*`). Copy to `.env` and fill in. |
 | `.env` | Local secrets, loaded by `python-dotenv`. Git-ignored. |
 | `.agent_history.json` | Persisted conversation memory (`FileChatMessageHistory`), so the CLI's memory survives across invocations. Git-ignored; created on first turn. |
 | `main.py` | The uv-generated stub. Not used by the agent; safe to ignore or repurpose. |
 | `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
 
-## The nine layers
+## The ten layers
 
 The agent was built incrementally, each layer adding one agent-runtime capability on top of
 the last. They all live in the current `agent.py`; this is the conceptual progression, not
@@ -117,6 +122,7 @@ separate files.
 | **7 — CLI with multiple front doors** | One agent, several entry points | A Click `cli` group: `chat` (REPL), `ask` (one-shot), `research` (saves markdown, `stream_answer` now returns the answer text), `calc`/`metrics` (direct tool calls, no LLM), `history` (reads saved memory), `serve` (placeholder). Memory moved to `FileChatMessageHistory` so it persists across processes. Two agent builders: memory-backed (`chat`/`research`) vs. memory-free (`ask`). | Process boundaries force state to be externalized: `history` runs in a *different* process than `chat`, so in-process memory would always be empty — hence the on-disk store. Match the agent to the command: a single-shot `ask` must not replay accumulated history into its prompt, or input tokens balloon with every past turn. LLM commands and direct-tool commands are deliberately separate front doors over the same core. |
 | **8 — Separation of concerns + REST API** | Modular package; a second front door | Split into `tools.py` / `hooks.py` / `core.py` / `api.py` / `agent.py` with one-way imports. Added a FastAPI app (`api.py`) with async `/ask`, `/chat`, `/metrics`, `/calc`, `/health` + CORS; `serve` now runs it via uvicorn. `/chat` keeps isolated per-session memory in a dict. | The runtime (`core`) is decoupled from its delivery (CLI vs. HTTP) — both front doors call the same builders and `stream_answer`. Different transports want different memory models: the CLI shares one file; the API isolates per `session_id`, so `build_chat_agent(memory=...)` takes an injected buffer. |
 | **9 — Testing + evals** | Automated quality gate | `tests/` (pytest: tool units + API integration with the LLM stubbed) and `evals/` (deepeval: deterministic `ToolCorrectnessMetric`/`SubstringMetric`, plus `AnswerRelevancyMetric` judged by Claude and scored onto LangFuse traces). `agent test` runs everything via `evals/run_all.py`. | Two kinds of checks for two kinds of failure: **tests** assert deterministic plumbing (fast, free, stub the LLM); **evals** assert probabilistic agent *behavior* (real calls, graded by deepeval metrics — tool-use/substring or an LLM judge). You can't unit-test "is the answer good" — that's what evals/judges are for. |
+| **10 — MCP integration** | Speak MCP both ways | **Client:** `mcp_integration/client.py` runs the official filesystem MCP server over stdio and wraps it as the `filesystem` tool (sandboxed to `docs/`), so the agent reads internal docs via MCP. **Server:** `mcp_integration/server.py` exposes `ask_agent`/`get_storage_metrics`/`calculate` over MCP (FastMCP, SSE); `agent mcp-serve` runs it. | MCP is a standard wire protocol for tool/context exchange. As a *client* the agent consumes any MCP server as just another tool; as a *server* the whole agent becomes a tool other MCP clients can call — the same core, now interoperable across the ecosystem. |
 
 ## Key concepts being learned
 
@@ -169,8 +175,10 @@ the underlying pattern:
   handler → `langfuse.langchain.CallbackHandler` (not `langfuse.callback`) with auth via
   `LANGFUSE_*` env vars instead of constructor args. **deepeval 2.x imported the removed
   `langchain.schema`** (broke pytest collection); resolved by using **deepeval 4.x**, which
-  needs `click<8.4` — so `click` is pinned `>=8.1,<8.4` to let both resolve. Call these out
-  rather than silently working around them.
+  needs `click<8.4` — so `click` is pinned `>=8.1,<8.4` to let both resolve. The MCP package
+  is named `mcp`, so the integration lives in **`mcp_integration/`** — a `mcp/` directory
+  would shadow the SDK and break `from mcp import ...`. Call these out rather than silently
+  working around them.
 - **Never commit secrets.** `.env` holds real keys and is git-ignored; don't echo secret
   values or write them into tracked files.
 - **Don't make billed API calls without asking** — running the agent live hits the

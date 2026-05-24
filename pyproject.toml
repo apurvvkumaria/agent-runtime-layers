@@ -13,6 +13,7 @@ dependencies = [
     "langchain-anthropic>=1.4.3",
     "langchain-community>=0.4.2",
     "langfuse>=4.6.1",
+    "mcp>=1.27.1",
     "pytest>=9.0.3",
     "python-dotenv>=1.2.2",
     "uvicorn>=0.47.0",

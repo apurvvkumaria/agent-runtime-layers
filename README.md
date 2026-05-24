@@ -1,16 +1,16 @@
 # langchain-agent-layers
 
-A small ReAct research agent — **Claude + LangChain** — built up in **nine deliberate
+A small ReAct research agent — **Claude + LangChain** — built up in **ten deliberate
 layers**, each adding one agent-runtime capability. It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
-calling, memory, streaming, lifecycle hooks, production tracing, a CLI, a REST API, and
-tests + evals.
+calling, memory, streaming, lifecycle hooks, production tracing, a CLI, a REST API,
+tests + evals, and MCP (Model Context Protocol) in both directions.
 
 ```bash
 uv run python agent.py ask "What is a Merkle tree?"
 ```
 
-## The nine layers
+## The ten layers
 
 The agent was built incrementally; each layer adds one capability on top of the last.
 
@@ -25,6 +25,7 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **7 — CLI with multiple front doors** | One agent, several entry points | A Click CLI; memory persisted to disk so it survives across separate command processes. Single-shot `ask` uses a memory-free agent to keep its prompt small. |
 | **8 — Separation of concerns + REST API** | Modular package; an HTTP front door | Split into `tools` / `hooks` / `core` / `api` / `agent` with one-way imports, plus a FastAPI server. The runtime is decoupled from its delivery — CLI and API share the same core; the API isolates memory per `session_id`. |
 | **9 — Testing + evals** | Automated quality gate | pytest (`tests/`) for deterministic plumbing with the LLM stubbed; evals (`evals/`) for probabilistic agent behavior — tool/answer assertions and LLM-as-judge relevance scores written to LangFuse. Tests answer "does it work?"; evals answer "is the answer good?" |
+| **10 — MCP integration** | Speak MCP both ways | **Client:** wrap the official filesystem MCP server as the `filesystem` tool (sandboxed to `docs/`). **Server:** expose `ask_agent` / `get_storage_metrics` / `calculate` over MCP via FastMCP (`agent mcp-serve`). As a client the agent consumes any MCP server as a tool; as a server the whole agent becomes a tool other MCP clients can call. |
 
 ## How it works
 
@@ -55,6 +56,7 @@ an `Observation:` and re-prompts — looping until the model emits `Final Answer
 | `fastapi` / `uvicorn` | The REST API layer and the ASGI server that runs it. |
 | `pytest` | Unit/integration test runner (`tests/`). |
 | `deepeval` | The eval framework (`evals/`) — `LLMTestCase`, `ToolCorrectnessMetric`, a custom substring metric, and `AnswerRelevancyMetric` judged by Claude. |
+| `mcp` | Model Context Protocol SDK — client (consume the filesystem server) and server (expose the agent as MCP tools). |
 
 Managed with [uv](https://docs.astral.sh/uv/). Requires Python 3.13+.
 
@@ -86,6 +88,7 @@ uv run python agent.py calc "150 * 223.48"             # direct calculator, no L
 uv run python agent.py metrics prod-us-east-1          # direct metrics tool, no LLM
 uv run python agent.py history             # last 10 turns from saved memory
 uv run python agent.py serve --port 8000   # start the FastAPI REST server
+uv run python agent.py mcp-serve --port 3000  # start the MCP server (SSE)
 uv run python agent.py test                # run tests + evals, print a summary
 ```
 
@@ -121,6 +124,17 @@ Two kinds of checks: **tests** (`tests/`) assert deterministic plumbing with the
 stubbed; **evals** (`evals/`) assert probabilistic agent behavior — deterministic tool/answer
 cases, plus LLM-as-judge relevance scores written to LangFuse.
 
+### MCP
+
+The agent speaks the Model Context Protocol both ways:
+
+- **As a client** — the `filesystem` tool wraps the official
+  `@modelcontextprotocol/server-filesystem` (run via `npx`), letting the agent read files
+  from `docs/` over MCP, sandboxed to that directory. Requires Node/`npx`.
+- **As a server** — `agent mcp-serve --port 3000` exposes `ask_agent`,
+  `get_storage_metrics`, and `calculate` as MCP tools (FastMCP over SSE), so any
+  MCP-compatible client can call the agent.
+
 ## Project structure
 
 | File | What it does |
@@ -129,14 +143,16 @@ cases, plus LLM-as-judge relevance scores written to LangFuse.
 | `hooks.py` | Print-based `StepLogger` callbacks and LangFuse setup; `get_callbacks()` / `flush_traces()`. |
 | `core.py` | The framework-agnostic runtime: ReAct prompts, memory, agent builders, `stream_answer()`. |
 | `api.py` | FastAPI app: `/ask`, `/chat`, `/metrics`, `/calc`, `/health` + CORS. |
-| `agent.py` | The Click CLI; `serve` runs the API via uvicorn, `test` runs the quality gate. |
+| `agent.py` | The Click CLI; `serve` runs the API, `mcp-serve` runs the MCP server, `test` runs the quality gate. |
+| `mcp_integration/` | MCP both ways — `client.py` (filesystem server → `filesystem` tool), `server.py` (agent → MCP tools). Named `mcp_integration` to avoid shadowing the `mcp` SDK. |
+| `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
 | `tests/` | pytest suite — tool units + API integration (LLM stubbed). |
 | `evals/` | Real-agent behavioral evals: deterministic cases + LLM-as-judge scoring. |
 | `.env` | Local secrets (`LANGFUSE_*`). Git-ignored. |
 | `.agent_history.json` | Persisted conversation memory. Git-ignored; created on first turn. |
 | `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
 
-Import direction is one-way: `tools`/`hooks` ← `core` ← `agent`/`api`.
+Import direction is one-way: `tools`/`hooks` ← `core` ← `agent`/`api`/`mcp_integration.server`.
 
 ## Notes
 
@@ -152,6 +168,8 @@ Import direction is one-way: `tools`/`hooks` ← `core` ← `agent`/`api`.
 - **deepeval:** pinned to 4.x. The older 2.x imported the removed `langchain.schema` (broke
   pytest collection); 4.x is LangChain 1.x-compatible but requires `click<8.4`, so `click` is
   pinned `>=8.1,<8.4`. Metrics judge with Claude via a custom `DeepEvalBaseLLM` (no OpenAI key).
+- **MCP naming:** the integration lives in `mcp_integration/`, not `mcp/` — a top-level `mcp/`
+  directory would shadow the installed `mcp` SDK and break `from mcp import ...`.
 
 This is a learning project, not a production system — the `storage_metrics` tool returns
 synthetic data, and answers depend on live web search.

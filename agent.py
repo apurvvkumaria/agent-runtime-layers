@@ -180,5 +180,20 @@ def serve(host: str, port: int) -> None:
     uvicorn.run(app, host=host, port=port)
 
 
+@cli.command(name="mcp-serve")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind.")
+@click.option("--port", default=3000, show_default=True, type=int, help="Port to listen on.")
+def mcp_serve(host: str, port: int) -> None:
+    """Start the MCP server exposing the agent's tools to MCP clients."""
+    from mcp_integration.server import TOOL_NAMES, create_server  # lazy import
+
+    server = create_server(host=host, port=port)
+    click.echo(f"MCP server running on port {port}")
+    click.echo("Available tools:")
+    for name in TOOL_NAMES:
+        click.echo(f"  - {name}")
+    server.run(transport="sse")
+
+
 if __name__ == "__main__":
     cli()
