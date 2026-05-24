@@ -118,3 +118,7 @@ answer. Follow-up questions resolve against memory. Exit with `exit`/`quit` or C
 
 This is a learning project, not a production system — the `storage_metrics` tool returns
 synthetic data, and answers depend on live web search.
+
+## License
+
+[MIT](LICENSE)
