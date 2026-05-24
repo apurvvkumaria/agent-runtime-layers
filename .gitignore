@@ -17,3 +17,8 @@ wheels/
 
 # Default output of `agent research`
 report.md
+
+# Test / eval caches
+.pytest_cache/
+.deepeval/
+.deepeval*.json

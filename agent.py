@@ -160,6 +160,14 @@ def history() -> None:
 
 
 @cli.command()
+def test() -> None:
+    """Run the unit/integration tests and evals, then print a summary."""
+    from evals.run_all import main as run_all
+
+    run_all()
+
+
+@cli.command()
 @click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind.")
 @click.option("--port", default=8000, show_default=True, type=int, help="Port to listen on.")
 def serve(host: str, port: int) -> None:
