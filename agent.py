@@ -102,12 +102,10 @@ def storage_metrics(cluster_name: str) -> str:
     )
 
 
-# The classic ReAct prompt. It instructs the LLM to alternate between
-# Thought / Action / Action Input / Observation steps until it can answer.
-# {chat_history} is injected by the executor's memory before each turn, so the
-# model can resolve references to earlier answers ("at that price").
-REACT_PROMPT = PromptTemplate.from_template(
-    """Answer the following question as best you can. You have access to the following tools:
+# Shared ReAct format instructions: alternate Thought / Action / Action Input /
+# Observation until the model can answer. {tools}/{tool_names} are filled by
+# create_react_agent; {input}/{agent_scratchpad} per invocation.
+_REACT_FORMAT = """Answer the following question as best you can. You have access to the following tools:
 
 {tools}
 
@@ -121,10 +119,28 @@ Observation: the result of the action
 ... (this Thought/Action/Action Input/Observation can repeat N times)
 Thought: I now know the final answer
 Final Answer: the final answer to the original input question
+"""
 
+# WITH memory: a {chat_history} slot is injected before the question so the model
+# can resolve references to earlier turns ("at that price"). Used by chat/research.
+REACT_PROMPT = PromptTemplate.from_template(
+    _REACT_FORMAT
+    + """
 Previous conversation history:
 {chat_history}
 
+Begin!
+
+Question: {input}
+Thought:{agent_scratchpad}"""
+)
+
+# WITHOUT memory: no {chat_history} at all, so a single-shot `ask` starts with
+# zero prior context — a much smaller prompt (~370 input tokens vs. thousands once
+# history accumulates). Used by ask.
+REACT_PROMPT_SINGLE = PromptTemplate.from_template(
+    _REACT_FORMAT
+    + """
 Begin!
 
 Question: {input}
@@ -241,8 +257,8 @@ def build_memory() -> ConversationBufferMemory:
     )
 
 
-def build_agent() -> AgentExecutor:
-    """Wire up Claude, the DuckDuckGo tool, and a verbose ReAct executor."""
+def _build_llm_and_tools() -> tuple[ChatAnthropic, list]:
+    """Shared setup for both agent builders: the LLM and the tool list."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set.")
 
@@ -256,18 +272,44 @@ def build_agent() -> AgentExecutor:
     # distributed-storage metrics backend.
     search = DuckDuckGoSearchRun()
     tools = [search, calculator, storage_metrics]
+    return llm, tools
 
+
+# verbose=True prints every Thought/Action/Observation so the loop is visible. The
+# explicit StepLogger hooks are attached per-call via config in stream_answer —
+# constructor callbacks don't propagate through astream_events.
+
+
+def build_chat_agent() -> AgentExecutor:
+    """ReAct executor WITH file-backed conversation memory.
+
+    Used by `chat` and `research`: each turn's input/output is saved and replayed
+    into the {chat_history} prompt slot, so the model has prior context.
+    """
+    llm, tools = _build_llm_and_tools()
     agent = create_react_agent(llm, tools, REACT_PROMPT)
-
-    memory = build_memory()
-
-    # verbose=True prints every Thought/Action/Observation so the loop is visible.
-    # The explicit StepLogger hooks are attached per-call via config in
-    # stream_answer — constructor callbacks don't propagate through astream_events.
     return AgentExecutor(
         agent=agent,
         tools=tools,
-        memory=memory,
+        memory=build_memory(),
+        verbose=True,
+        handle_parsing_errors=True,
+    )
+
+
+def build_single_shot_agent() -> AgentExecutor:
+    """ReAct executor with NO memory at all.
+
+    Used by `ask`: it neither loads nor saves history, and its prompt has no
+    {chat_history} slot — so every call starts from zero prior context. This is
+    what keeps a single-shot question's input token count minimal instead of
+    growing with the accumulated conversation.
+    """
+    llm, tools = _build_llm_and_tools()
+    agent = create_react_agent(llm, tools, REACT_PROMPT_SINGLE)
+    return AgentExecutor(
+        agent=agent,
+        tools=tools,
         verbose=True,
         handle_parsing_errors=True,
     )
@@ -415,13 +457,16 @@ def _new_session_id() -> str:
     return f"agent-{datetime.now():%Y%m%d-%H%M%S}"
 
 
-def _start_llm_session() -> tuple[AgentExecutor, BaseCallbackHandler | None, str]:
-    """Build the executor + LangFuse handler for an LLM-backed command.
+def _start_llm_session(
+    builder,
+) -> tuple[AgentExecutor, BaseCallbackHandler | None, str]:
+    """Build the executor (via `builder`) + LangFuse handler for an LLM command.
 
+    `builder` is build_chat_agent (memory) or build_single_shot_agent (no memory).
     Converts a missing API key into a clean CLI error instead of a traceback.
     """
     try:
-        executor = build_agent()
+        executor = builder()
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
     handler = build_langfuse_handler()
@@ -457,7 +502,7 @@ def cli() -> None:
 @cli.command()
 def chat() -> None:
     """Start an interactive multi-turn conversation (memory + streaming)."""
-    executor, handler, session_id = _start_llm_session()
+    executor, handler, session_id = _start_llm_session(build_chat_agent)
     try:
         asyncio.run(converse(executor, [handler] if handler else [], session_id))
     finally:
@@ -467,8 +512,8 @@ def chat() -> None:
 @cli.command()
 @click.argument("question")
 def ask(question: str) -> None:
-    """Answer a single QUESTION and exit (no interactive loop)."""
-    executor, handler, session_id = _start_llm_session()
+    """Answer a single QUESTION and exit (no interactive loop, no memory)."""
+    executor, handler, session_id = _start_llm_session(build_single_shot_agent)
     try:
         asyncio.run(stream_answer(executor, question, [handler] if handler else [], session_id))
     finally:
@@ -484,7 +529,7 @@ def ask(question: str) -> None:
 )
 def research(topic: str, output: str) -> None:
     """Research TOPIC on the web and save a markdown report."""
-    executor, handler, session_id = _start_llm_session()
+    executor, handler, session_id = _start_llm_session(build_chat_agent)
     question = (
         f"Research this topic using web search and write a thorough, well-structured "
         f"summary with key points and sources: {topic}"
