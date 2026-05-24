@@ -109,7 +109,7 @@ def ask(question: str) -> None:
 )
 def research(topic: str, output: str) -> None:
     """Research TOPIC on the web and save a markdown report."""
-    executor = _build_or_die(build_chat_agent)
+    executor = _build_or_die(lambda: build_chat_agent(prompt_name="research_agent"))
     question = (
         f"Research this topic using web search and write a thorough, well-structured "
         f"summary with key points and sources: {topic}"
@@ -193,6 +193,34 @@ def mcp_serve(host: str, port: int) -> None:
     for name in TOOL_NAMES:
         click.echo(f"  - {name}")
     server.run(transport="sse")
+
+
+@cli.command(name="sync-prompt")
+def sync_prompt() -> None:
+    """Push the local single-shot prompt to LangFuse as 'react-agent-prompt'."""
+    from core import LANGFUSE_PROMPT_NAME
+    from hooks import _langfuse_configured
+    from prompts.loader import load_prompt
+
+    if not _langfuse_configured():
+        raise click.ClickException(
+            "LangFuse is not configured — set LANGFUSE_* keys in .env to sync prompts."
+        )
+
+    from langfuse import get_client
+
+    text = load_prompt("single_shot_agent")
+    try:
+        prompt = get_client().create_prompt(
+            name=LANGFUSE_PROMPT_NAME,
+            prompt=text,
+            type="text",
+            labels=["production"],
+        )
+    except Exception as exc:
+        raise click.ClickException(f"Failed to sync prompt to LangFuse: {exc}") from exc
+
+    click.echo(f"Prompt synced to LangFuse: {LANGFUSE_PROMPT_NAME} v{prompt.version}")
 
 
 if __name__ == "__main__":

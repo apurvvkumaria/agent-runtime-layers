@@ -1,16 +1,17 @@
 # langchain-agent-layers
 
-A small ReAct research agent — **Claude + LangChain** — built up in **ten deliberate
+A small ReAct research agent — **Claude + LangChain** — built up in **eleven deliberate
 layers**, each adding one agent-runtime capability. It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
 calling, memory, streaming, lifecycle hooks, production tracing, a CLI, a REST API,
-tests + evals, and MCP (Model Context Protocol) in both directions.
+tests + evals, MCP (Model Context Protocol) in both directions, and file/LangFuse-based
+prompt management.
 
 ```bash
 uv run python agent.py ask "What is a Merkle tree?"
 ```
 
-## The ten layers
+## The eleven layers
 
 The agent was built incrementally; each layer adds one capability on top of the last.
 
@@ -26,6 +27,7 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **8 — Separation of concerns + REST API** | Modular package; an HTTP front door | Split into `tools` / `hooks` / `core` / `api` / `agent` with one-way imports, plus a FastAPI server. The runtime is decoupled from its delivery — CLI and API share the same core; the API isolates memory per `session_id`. |
 | **9 — Testing + evals** | Automated quality gate | pytest (`tests/`) for deterministic plumbing with the LLM stubbed; evals (`evals/`) for probabilistic agent behavior — tool/answer assertions and LLM-as-judge relevance scores written to LangFuse. Tests answer "does it work?"; evals answer "is the answer good?" |
 | **10 — MCP integration** | Speak MCP both ways | **Client:** wrap the official filesystem MCP server as the `filesystem` tool (sandboxed to `docs/`). **Server:** expose `ask_agent` / `get_storage_metrics` / `calculate` over MCP via FastMCP (`agent mcp-serve`). As a client the agent consumes any MCP server as a tool; as a server the whole agent becomes a tool other MCP clients can call. |
+| **11 — Prompt management** | Prompts as managed assets | System prompts live in `prompts/*.md` (loaded by `load_prompt`), not string literals in code. The single-shot prompt is fetched from LangFuse first (`react-agent-prompt`) with the local file as fallback; `agent sync-prompt` pushes the local copy to LangFuse as a new version. Prompts become reviewable in diffs and versionable without a redeploy. |
 
 ## How it works
 
@@ -89,6 +91,7 @@ uv run python agent.py metrics prod-us-east-1          # direct metrics tool, no
 uv run python agent.py history             # last 10 turns from saved memory
 uv run python agent.py serve --port 8000   # start the FastAPI REST server
 uv run python agent.py mcp-serve --port 3000  # start the MCP server (SSE)
+uv run python agent.py sync-prompt         # push local single-shot prompt to LangFuse
 uv run python agent.py test                # run tests + evals, print a summary
 ```
 
@@ -135,6 +138,14 @@ The agent speaks the Model Context Protocol both ways:
   `get_storage_metrics`, and `calculate` as MCP tools (FastMCP over SSE), so any
   MCP-compatible client can call the agent.
 
+### Prompts
+
+System prompts live in `prompts/*.md` (loaded by `prompts/loader.py`) rather than as string
+literals in code — so they're reviewable in diffs. The single-shot prompt is also managed in
+LangFuse: `build_single_shot_agent` fetches `react-agent-prompt` from LangFuse first and
+falls back to the local file, and `agent sync-prompt` pushes the local copy up as a new
+version. Editing a prompt is a behavior change — re-run `agent test` after.
+
 ## Project structure
 
 | File | What it does |
@@ -145,6 +156,7 @@ The agent speaks the Model Context Protocol both ways:
 | `api.py` | FastAPI app: `/ask`, `/chat`, `/metrics`, `/calc`, `/health` + CORS. |
 | `agent.py` | The Click CLI; `serve` runs the API, `mcp-serve` runs the MCP server, `test` runs the quality gate. |
 | `mcp_integration/` | MCP both ways — `client.py` (filesystem server → `filesystem` tool), `server.py` (agent → MCP tools). Named `mcp_integration` to avoid shadowing the `mcp` SDK. |
+| `prompts/` | System prompts as markdown (`single_shot_agent`, `chat_agent`, `research_agent`, `storage_agent`) + `loader.py`. |
 | `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
 | `tests/` | pytest suite — tool units + API integration (LLM stubbed). |
 | `evals/` | Real-agent behavioral evals: deterministic cases + LLM-as-judge scoring. |

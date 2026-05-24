@@ -10,9 +10,10 @@ The agent has three front doors — a Click CLI (`agent.py`), a FastAPI REST ser
 (`api.py`), and an MCP server (`mcp_integration/server.py`) — over one shared ReAct core
 (`core.py`): it reasons with Claude, calls tools (web search, a calculator, a fake
 storage-metrics backend, and an MCP-backed filesystem reader) to gather facts, remembers
-the conversation across turns, streams its final answer token-by-token, and emits both
-print-based hooks and structured LangFuse traces. Every reasoning step is visible. It was
-built up in ten deliberate layers (see below), each adding one runtime capability.
+the conversation across turns, streams its final answer token-by-token, loads its system
+prompts from files (or LangFuse), and emits both print-based hooks and structured LangFuse
+traces. Every reasoning step is visible. It was built up in eleven deliberate layers (see
+below), each adding one runtime capability.
 
 ## How to run it
 
@@ -28,6 +29,7 @@ uv run python agent.py metrics prod-us-east-1          # direct metrics, no LLM
 uv run python agent.py history             # last 10 turns from saved memory
 uv run python agent.py serve --port 8000   # start the FastAPI REST server
 uv run python agent.py mcp-serve --port 3000  # start the MCP server (SSE)
+uv run python agent.py sync-prompt         # push local single-shot prompt to LangFuse
 uv run python agent.py test                # run tests + evals, print a summary
 ```
 
@@ -92,7 +94,8 @@ Nothing imports `agent`.
 |---|---|
 | `tools.py` | All tool definitions: `calculator` (safe AST eval), `storage_metrics` (synthetic), and `DuckDuckGoSearchRun`. Exports `get_tools()`. Tools are also imported directly for the no-LLM `calc`/`metrics` paths. |
 | `hooks.py` | Observability. `StepLogger` (print-based `on_tool_*`/`on_llm_*` callbacks) and the LangFuse handler setup. Exports `get_callbacks()` (print hooks + LangFuse when configured; LangFuse handler cached per process) and `flush_traces()`. |
-| `core.py` | The agent runtime, framework-agnostic. ReAct prompts, `build_memory()`, the two builders — `build_chat_agent()` (memory) and `build_single_shot_agent()` (none), `new_session_id()`, the `stream_answer()` streaming loop, and `load_recent_turns()`. Imports `tools` + `hooks`. |
+| `core.py` | The agent runtime, framework-agnostic. `build_memory()`, the two builders — `build_chat_agent()` (memory) and `build_single_shot_agent()` (none), prompt selection (`_react_prompt` — LangFuse-first then local file), `new_session_id()`, the `stream_answer()` streaming loop, and `load_recent_turns()`. Imports `tools` + `hooks` + `prompts.loader`. |
+| `prompts/` | The prompt library: `single_shot_agent.md`, `chat_agent.md`, `research_agent.md`, `storage_agent.md` (each a full ReAct template), plus `loader.py` (`load_prompt(name, **kwargs)`). |
 | `api.py` | FastAPI app with async endpoints — `POST /ask`, `POST /chat` (per-session in-memory agents), `GET /metrics/{cluster}`, `GET /calc?expr=`, `GET /health` — plus CORS. Imports `core`. |
 | `agent.py` | The Click CLI only: `chat`, `ask`, `research`, `calc`, `metrics`, `history`, `serve`, `test`. The REPL (`converse`) lives here. Imports `core` + `api`. |
 | `tests/` | pytest suite — `test_tools.py` (unit), `test_api.py` (FastAPI TestClient integration, LLM stubbed), `conftest.py` (fixtures: `client`, `stub_llm`). No real API calls. |
@@ -105,7 +108,7 @@ Nothing imports `agent`.
 | `main.py` | The uv-generated stub. Not used by the agent; safe to ignore or repurpose. |
 | `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
 
-## The ten layers
+## The eleven layers
 
 The agent was built incrementally, each layer adding one agent-runtime capability on top of
 the last. They all live in the current `agent.py`; this is the conceptual progression, not
@@ -123,6 +126,7 @@ separate files.
 | **8 — Separation of concerns + REST API** | Modular package; a second front door | Split into `tools.py` / `hooks.py` / `core.py` / `api.py` / `agent.py` with one-way imports. Added a FastAPI app (`api.py`) with async `/ask`, `/chat`, `/metrics`, `/calc`, `/health` + CORS; `serve` now runs it via uvicorn. `/chat` keeps isolated per-session memory in a dict. | The runtime (`core`) is decoupled from its delivery (CLI vs. HTTP) — both front doors call the same builders and `stream_answer`. Different transports want different memory models: the CLI shares one file; the API isolates per `session_id`, so `build_chat_agent(memory=...)` takes an injected buffer. |
 | **9 — Testing + evals** | Automated quality gate | `tests/` (pytest: tool units + API integration with the LLM stubbed) and `evals/` (deepeval: deterministic `ToolCorrectnessMetric`/`SubstringMetric`, plus `AnswerRelevancyMetric` judged by Claude and scored onto LangFuse traces). `agent test` runs everything via `evals/run_all.py`. | Two kinds of checks for two kinds of failure: **tests** assert deterministic plumbing (fast, free, stub the LLM); **evals** assert probabilistic agent *behavior* (real calls, graded by deepeval metrics — tool-use/substring or an LLM judge). You can't unit-test "is the answer good" — that's what evals/judges are for. |
 | **10 — MCP integration** | Speak MCP both ways | **Client:** `mcp_integration/client.py` runs the official filesystem MCP server over stdio and wraps it as the `filesystem` tool (sandboxed to `docs/`), so the agent reads internal docs via MCP. **Server:** `mcp_integration/server.py` exposes `ask_agent`/`get_storage_metrics`/`calculate` over MCP (FastMCP, SSE); `agent mcp-serve` runs it. | MCP is a standard wire protocol for tool/context exchange. As a *client* the agent consumes any MCP server as just another tool; as a *server* the whole agent becomes a tool other MCP clients can call — the same core, now interoperable across the ecosystem. |
+| **11 — Prompt management** | Prompts as managed assets, not string literals | System prompts moved out of `core.py` into `prompts/*.md` loaded by `load_prompt()`; each builder picks its prompt (`single_shot_agent`, `chat_agent`, `research_agent`). The single-shot prompt is also fetched from LangFuse first (`react-agent-prompt`) with the local file as fallback; `agent sync-prompt` pushes the local copy to LangFuse as a new version. | Prompts are product, and they drift: keeping them in files makes them reviewable in diffs, and registering them in LangFuse lets you version and roll them forward without a redeploy. The fallback chain (LangFuse → file) means the agent still runs offline. Mind that prompt wording *is* behavior — a "be concise, answer directly" tweak made the model skip the calculator and broke two evals until reworded. |
 
 ## Key concepts being learned
 

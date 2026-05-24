@@ -15,57 +15,45 @@ from langchain_classic.memory import ConversationBufferMemory
 from langchain_community.chat_message_histories import FileChatMessageHistory
 from langchain_core.prompts import PromptTemplate
 
-from hooks import get_callbacks
+from hooks import _langfuse_configured, get_callbacks
+from prompts.loader import load_prompt
 from tools import get_tools
 
 # Conversation history is persisted here so it survives across CLI invocations
 # (e.g. `agent ask` then `agent history` run in separate processes).
 HISTORY_PATH = Path(__file__).parent / ".agent_history.json"
 
-# Shared ReAct format instructions: alternate Thought / Action / Action Input /
-# Observation until the model can answer. {tools}/{tool_names} are filled by
-# create_react_agent; {input}/{agent_scratchpad} per invocation.
-_REACT_FORMAT = """Answer the following question as best you can. You have access to the following tools:
+# The single-shot prompt is also managed in LangFuse under this name; the CLI's
+# `sync-prompt` pushes the local file there.
+LANGFUSE_PROMPT_NAME = "react-agent-prompt"
 
-{tools}
 
-Use the following format:
+def _prompt_from_langfuse(name: str) -> str | None:
+    """Fetch a prompt's template text from LangFuse, or None if unavailable.
 
-Question: the input question you must answer
-Thought: you should always think about what to do
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
-Thought: I now know the final answer
-Final Answer: the final answer to the original input question
-"""
+    Returns None when LangFuse isn't configured or the prompt doesn't exist, so
+    callers can fall back to the local file. Never raises.
+    """
+    if not _langfuse_configured():
+        return None
+    try:
+        from langfuse import get_client
 
-# WITH memory: a {chat_history} slot is injected before the question so the model
-# can resolve references to earlier turns ("at that price"). Used by chat/research.
-REACT_PROMPT = PromptTemplate.from_template(
-    _REACT_FORMAT
-    + """
-Previous conversation history:
-{chat_history}
+        return get_client().get_prompt(name, type="text").prompt
+    except Exception:
+        return None
 
-Begin!
 
-Question: {input}
-Thought:{agent_scratchpad}"""
-)
+def _react_prompt(prompt_name: str, langfuse_name: str | None = None) -> PromptTemplate:
+    """Build a ReAct PromptTemplate, preferring LangFuse then the local file.
 
-# WITHOUT memory: no {chat_history} at all, so a single-shot `ask` starts with
-# zero prior context — a much smaller prompt (~370 input tokens vs. thousands once
-# history accumulates). Used by ask.
-REACT_PROMPT_SINGLE = PromptTemplate.from_template(
-    _REACT_FORMAT
-    + """
-Begin!
-
-Question: {input}
-Thought:{agent_scratchpad}"""
-)
+    `prompt_name` is the local `prompts/{name}.md`. If `langfuse_name` is given,
+    try LangFuse first and fall back to the local file.
+    """
+    text = _prompt_from_langfuse(langfuse_name) if langfuse_name else None
+    if text is None:
+        text = load_prompt(prompt_name)
+    return PromptTemplate.from_template(text)
 
 
 def build_memory(persist: bool = True) -> ConversationBufferMemory:
@@ -95,20 +83,24 @@ def _build_llm_and_tools() -> tuple[ChatAnthropic, list]:
     return llm, get_tools()
 
 
-def build_chat_agent(memory: ConversationBufferMemory | None = None) -> AgentExecutor:
-    """ReAct executor WITH conversation memory.
+def build_chat_agent(
+    memory: ConversationBufferMemory | None = None,
+    prompt_name: str = "chat_agent",
+) -> AgentExecutor:
+    """ReAct executor WITH conversation memory, prompt loaded from prompts/.
 
-    Used by `chat` and `research`: each turn's input/output is saved and replayed
-    into the {chat_history} prompt slot, so the model has prior context. Pass a
-    `memory` to use an isolated buffer (e.g. per-session in the API); the default
-    is the file-backed buffer shared across CLI runs.
+    Used by `chat` (chat_agent prompt) and `research` (research_agent prompt): each
+    turn's input/output is saved and replayed into the {chat_history} slot. Pass a
+    `memory` to use an isolated buffer (e.g. per-session in the API); the default is
+    the file-backed buffer shared across CLI runs. The chosen prompt must include a
+    {chat_history} placeholder.
 
     verbose=True prints the Thought/Action/Observation loop; the explicit hooks are
     attached per-call via config in stream_answer (constructor callbacks don't
     propagate through astream_events).
     """
     llm, tools = _build_llm_and_tools()
-    agent = create_react_agent(llm, tools, REACT_PROMPT)
+    agent = create_react_agent(llm, tools, _react_prompt(prompt_name))
     return AgentExecutor(
         agent=agent,
         tools=tools,
@@ -118,16 +110,17 @@ def build_chat_agent(memory: ConversationBufferMemory | None = None) -> AgentExe
     )
 
 
-def build_single_shot_agent() -> AgentExecutor:
-    """ReAct executor with NO memory at all.
+def build_single_shot_agent(prompt_name: str = "single_shot_agent") -> AgentExecutor:
+    """ReAct executor with NO memory at all, prompt loaded from prompts/.
 
     Used by `ask`: it neither loads nor saves history, and its prompt has no
-    {chat_history} slot — so every call starts from zero prior context. This keeps
-    a single-shot question's input token count minimal instead of growing with the
-    accumulated conversation.
+    {chat_history} slot — so every call starts from zero prior context, keeping the
+    input token count minimal. For the default prompt, the template is fetched from
+    LangFuse first (`react-agent-prompt`) and falls back to the local file.
     """
     llm, tools = _build_llm_and_tools()
-    agent = create_react_agent(llm, tools, REACT_PROMPT_SINGLE)
+    langfuse_name = LANGFUSE_PROMPT_NAME if prompt_name == "single_shot_agent" else None
+    agent = create_react_agent(llm, tools, _react_prompt(prompt_name, langfuse_name))
     return AgentExecutor(
         agent=agent,
         tools=tools,
