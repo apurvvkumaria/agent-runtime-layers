@@ -1,23 +1,26 @@
-"""LangFuse evals: run the agent, judge each answer with an LLM, score the trace.
+"""LangFuse evals: deepeval metrics scored onto LangFuse traces.
 
 For each question we open a LangFuse span (so we control/know the trace id), run
-the agent inside it (its callback nests under the span, sharing the trace), ask
-Claude to rate the answer 1-5 for relevance, and attach that as a score on the
-trace. Requires LANGFUSE_* keys; degrades to a skip when not configured.
+the agent inside it (its callback nests under the span, sharing the trace), grade
+the answer with deepeval's `AnswerRelevancyMetric` (judged by Claude), and attach
+that score to the trace. Requires LANGFUSE_* keys; degrades to a skip otherwise.
 
 Run directly:  uv run python evals/langfuse_evals.py
 """
 
+import os
 import pathlib
-import re
 import sys
 
 # Repo root on the path so `import core` works regardless of cwd.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+os.environ.setdefault("DEEPEVAL_TELEMETRY_OPT_OUT", "YES")
 
-from langchain_anthropic import ChatAnthropic  # noqa: E402
+from deepeval.metrics import AnswerRelevancyMetric  # noqa: E402
+from deepeval.test_case import LLMTestCase  # noqa: E402
 
 from core import build_single_shot_agent  # noqa: E402
+from evals.judge import claude_judge  # noqa: E402
 from hooks import _langfuse_configured, get_callbacks  # noqa: E402
 
 QUESTIONS = [
@@ -27,24 +30,8 @@ QUESTIONS = [
 ]
 
 
-def _judge(question: str, answer: str) -> int:
-    """LLM-as-judge: ask Claude to rate the answer 1-5 for relevance/quality."""
-    judge = ChatAnthropic(model="claude-sonnet-4-6", temperature=0)
-    prompt = (
-        "You are grading an AI assistant's answer for relevance and quality on a scale "
-        "of 1 to 5 (5 = excellent, fully relevant and correct; 1 = irrelevant or wrong).\n\n"
-        f"Question: {question}\n"
-        f"Answer: {answer}\n\n"
-        "Respond with ONLY a single integer from 1 to 5."
-    )
-    resp = judge.invoke(prompt)
-    text = resp.content if isinstance(resp.content, str) else str(resp.content)
-    match = re.search(r"[1-5]", text)
-    return int(match.group()) if match else 3
-
-
 def run() -> float | None:
-    """Run every question, score its trace, and return the average score (or None)."""
+    """Run each question, score relevancy onto its trace; return the average (0-1)."""
     if not _langfuse_configured():
         print("LangFuse not configured (set LANGFUSE_* keys) — skipping LangFuse evals.")
         return None
@@ -53,7 +40,9 @@ def run() -> float | None:
 
     langfuse = get_client()
     executor = build_single_shot_agent()
-    scores: list[int] = []
+    # AnswerRelevancyMetric is LLM-judged; use Claude as the judge model.
+    metric = AnswerRelevancyMetric(model=claude_judge(), threshold=0.5, async_mode=False)
+    scores: list[float] = []
 
     for question in QUESTIONS:
         with langfuse.start_as_current_observation(name="langfuse-eval", as_type="span"):
@@ -61,19 +50,21 @@ def run() -> float | None:
             # Run inside the span so the agent's trace nests under it (same trace_id).
             result = executor.invoke({"input": question}, config={"callbacks": get_callbacks()})
             answer = result.get("output", "")
-            score = _judge(question, answer)
+
+            metric.measure(LLMTestCase(input=question, actual_output=answer))
+            score = metric.score or 0.0
             langfuse.score_current_trace(
-                name="relevance",
+                name="answer_relevancy",
                 value=score,
                 data_type="NUMERIC",
-                comment="LLM-as-judge relevance (1-5)",
+                comment=metric.reason or "deepeval AnswerRelevancyMetric (Claude judge)",
             )
         scores.append(score)
-        print(f"[trace {trace_id}] relevance={score}/5  Q: {question}")
+        print(f"[trace {trace_id}] answer_relevancy={score:.2f}  Q: {question}")
 
     langfuse.flush()
     avg = sum(scores) / len(scores)
-    print(f"\nLangFuse evals: avg score {avg:.1f}/5")
+    print(f"\nLangFuse evals: avg answer_relevancy {avg:.2f}/1.0")
     return avg
 
 

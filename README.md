@@ -54,7 +54,7 @@ an `Observation:` and re-prompts — looping until the model emits `Final Answer
 | `click` | The CLI framework and auto-generated `--help`. |
 | `fastapi` / `uvicorn` | The REST API layer and the ASGI server that runs it. |
 | `pytest` | Unit/integration test runner (`tests/`). |
-| `deepeval` | Installed for eval tooling (its pytest plugin is disabled — see [Notes](#notes)). |
+| `deepeval` | The eval framework (`evals/`) — `LLMTestCase`, `ToolCorrectnessMetric`, a custom substring metric, and `AnswerRelevancyMetric` judged by Claude. |
 
 Managed with [uv](https://docs.astral.sh/uv/). Requires Python 3.13+.
 
@@ -149,9 +149,9 @@ Import direction is one-way: `tools`/`hooks` ← `core` ← `agent`/`api`.
 - **Version notes:** LangChain 1.x moved the classic agents to `langchain-classic`; LangFuse
   v4 exposes its handler at `langfuse.langchain.CallbackHandler` with auth via `LANGFUSE_*`
   env vars (not constructor args).
-- **deepeval:** its pytest plugin imports the removed `langchain.schema`, which breaks
-  collection, so it's disabled via `addopts = "-p no:plugins"` in `pyproject.toml`. deepeval
-  is installed but the current evals use a lightweight custom approach rather than its API.
+- **deepeval:** pinned to 4.x. The older 2.x imported the removed `langchain.schema` (broke
+  pytest collection); 4.x is LangChain 1.x-compatible but requires `click<8.4`, so `click` is
+  pinned `>=8.1,<8.4`. Metrics judge with Claude via a custom `DeepEvalBaseLLM` (no OpenAI key).
 
 This is a learning project, not a production system — the `storage_metrics` tool returns
 synthetic data, and answers depend on live web search.

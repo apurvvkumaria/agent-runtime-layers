@@ -50,7 +50,7 @@ def main() -> None:
     if lf_avg is None:
         print("LangFuse evals: skipped (not configured)")
     else:
-        print(f"LangFuse evals: avg score {lf_avg:.1f}/5")
+        print(f"LangFuse evals: avg answer_relevancy {lf_avg:.2f}/1.0")
 
 
 if __name__ == "__main__":

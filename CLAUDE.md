@@ -77,7 +77,7 @@ This project uses **uv** for dependency and environment management. Add deps wit
 | `fastapi` | The REST API layer (`api.py`) — async endpoints, request validation, CORS. |
 | `uvicorn` | ASGI server that runs the FastAPI app (`agent serve`). |
 | `pytest` | The unit/integration test runner (`tests/`). |
-| `deepeval` | Installed for eval tooling; the current evals use a lightweight custom approach, so it's available but not yet wired in. Its pytest plugin is disabled (see note below). |
+| `deepeval` | The eval framework (`evals/`): `LLMTestCase`, `ToolCorrectnessMetric`, a custom `SubstringMetric`, and `AnswerRelevancyMetric` (judged by Claude via a custom `DeepEvalBaseLLM`). Pinned to 4.x for LangChain 1.x compatibility (see note below). |
 
 ## Project structure
 
@@ -93,7 +93,7 @@ Nothing imports `agent`.
 | `api.py` | FastAPI app with async endpoints — `POST /ask`, `POST /chat` (per-session in-memory agents), `GET /metrics/{cluster}`, `GET /calc?expr=`, `GET /health` — plus CORS. Imports `core`. |
 | `agent.py` | The Click CLI only: `chat`, `ask`, `research`, `calc`, `metrics`, `history`, `serve`, `test`. The REPL (`converse`) lives here. Imports `core` + `api`. |
 | `tests/` | pytest suite — `test_tools.py` (unit), `test_api.py` (FastAPI TestClient integration, LLM stubbed), `conftest.py` (fixtures: `client`, `stub_llm`). No real API calls. |
-| `evals/` | Behavioral evals (real LLM calls): `deterministic_evals.py` (fixed cases asserting tool used + answer substring), `langfuse_evals.py` (LLM-as-judge scores written to LangFuse traces), `run_all.py` (runs pytest + both eval suites and prints a summary). |
+| `evals/` | Behavioral evals via **deepeval** (real LLM calls): `deterministic_evals.py` (`LLMTestCase` + `ToolCorrectnessMetric` + custom `SubstringMetric`), `langfuse_evals.py` (`AnswerRelevancyMetric` scored onto LangFuse traces), `judge.py` (Claude-backed `DeepEvalBaseLLM` judge), `run_all.py` (runs pytest + both eval suites and prints a summary). |
 | `.env.example` | Committed template of required env vars (`ANTHROPIC_API_KEY`, `LANGFUSE_*`). Copy to `.env` and fill in. |
 | `.env` | Local secrets, loaded by `python-dotenv`. Git-ignored. |
 | `.agent_history.json` | Persisted conversation memory (`FileChatMessageHistory`), so the CLI's memory survives across invocations. Git-ignored; created on first turn. |
@@ -116,7 +116,7 @@ separate files.
 | **6 — Production observability** | Structured traces in LangFuse | `build_langfuse_handler()` returns a LangFuse `CallbackHandler` when `LANGFUSE_*` keys are real (else `None`, degrading to print hooks). `python-dotenv` loads `.env`; the LLM commands flush the client on exit. Trace attributes (`run_name`, `langfuse_session_id`, `langfuse_tags`) are set per-call via `config` metadata, per the official Langfuse skill pattern. | Print hooks are for *you, now*; tracing is for *operators, later* — same callback mechanism, durable structured spans (tool/LLM spans, latency, token counts) instead of stdout. Both run together; LangFuse failures never crash the agent. |
 | **7 — CLI with multiple front doors** | One agent, several entry points | A Click `cli` group: `chat` (REPL), `ask` (one-shot), `research` (saves markdown, `stream_answer` now returns the answer text), `calc`/`metrics` (direct tool calls, no LLM), `history` (reads saved memory), `serve` (placeholder). Memory moved to `FileChatMessageHistory` so it persists across processes. Two agent builders: memory-backed (`chat`/`research`) vs. memory-free (`ask`). | Process boundaries force state to be externalized: `history` runs in a *different* process than `chat`, so in-process memory would always be empty — hence the on-disk store. Match the agent to the command: a single-shot `ask` must not replay accumulated history into its prompt, or input tokens balloon with every past turn. LLM commands and direct-tool commands are deliberately separate front doors over the same core. |
 | **8 — Separation of concerns + REST API** | Modular package; a second front door | Split into `tools.py` / `hooks.py` / `core.py` / `api.py` / `agent.py` with one-way imports. Added a FastAPI app (`api.py`) with async `/ask`, `/chat`, `/metrics`, `/calc`, `/health` + CORS; `serve` now runs it via uvicorn. `/chat` keeps isolated per-session memory in a dict. | The runtime (`core`) is decoupled from its delivery (CLI vs. HTTP) — both front doors call the same builders and `stream_answer`. Different transports want different memory models: the CLI shares one file; the API isolates per `session_id`, so `build_chat_agent(memory=...)` takes an injected buffer. |
-| **9 — Testing + evals** | Automated quality gate | `tests/` (pytest: tool units + API integration with the LLM stubbed) and `evals/` (real-agent behavioral checks: deterministic tool/answer assertions, plus LLM-as-judge relevance scores written to LangFuse). `agent test` runs everything via `evals/run_all.py`. | Two kinds of checks for two kinds of failure: **tests** assert deterministic plumbing (fast, free, stub the LLM); **evals** assert probabilistic agent *behavior* (real calls, graded by tool-use + substring or an LLM judge). You can't unit-test "is the answer good" — that's what evals/judges are for. |
+| **9 — Testing + evals** | Automated quality gate | `tests/` (pytest: tool units + API integration with the LLM stubbed) and `evals/` (deepeval: deterministic `ToolCorrectnessMetric`/`SubstringMetric`, plus `AnswerRelevancyMetric` judged by Claude and scored onto LangFuse traces). `agent test` runs everything via `evals/run_all.py`. | Two kinds of checks for two kinds of failure: **tests** assert deterministic plumbing (fast, free, stub the LLM); **evals** assert probabilistic agent *behavior* (real calls, graded by deepeval metrics — tool-use/substring or an LLM judge). You can't unit-test "is the answer good" — that's what evals/judges are for. |
 
 ## Key concepts being learned
 
@@ -167,10 +167,10 @@ the underlying pattern:
 - **Flag framework-version gotchas.** LangChain 1.x and LangFuse v4 moved/renamed things —
   e.g. classic agents → `langchain-classic`, `duckduckgo-search` → `ddgs`, and LangFuse's
   handler → `langfuse.langchain.CallbackHandler` (not `langfuse.callback`) with auth via
-  `LANGFUSE_*` env vars instead of constructor args. **deepeval's pytest plugin imports the
-  removed `langchain.schema`**, breaking pytest collection — it's disabled via
-  `addopts = "-p no:plugins"` in `pyproject.toml`. Call these out rather than silently
-  working around them.
+  `LANGFUSE_*` env vars instead of constructor args. **deepeval 2.x imported the removed
+  `langchain.schema`** (broke pytest collection); resolved by using **deepeval 4.x**, which
+  needs `click<8.4` — so `click` is pinned `>=8.1,<8.4` to let both resolve. Call these out
+  rather than silently working around them.
 - **Never commit secrets.** `.env` holds real keys and is git-ignored; don't echo secret
   values or write them into tracked files.
 - **Don't make billed API calls without asking** — running the agent live hits the
