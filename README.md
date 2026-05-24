@@ -60,17 +60,15 @@ Managed with [uv](https://docs.astral.sh/uv/). Requires Python 3.13+.
 # 1. Install dependencies
 uv sync
 
-# 2. Provide a Claude API key (required for the LLM-backed commands)
-export ANTHROPIC_API_KEY=sk-ant-...
-
-# 3. (Optional) Enable LangFuse tracing — copy your keys into a .env file:
-#    LANGFUSE_PUBLIC_KEY=pk-lf-...
-#    LANGFUSE_SECRET_KEY=sk-lf-...
-#    LANGFUSE_HOST=https://cloud.langfuse.com
+# 2. Set up credentials
+cp .env.example .env          # then edit .env and add your real keys
 ```
 
-Without LangFuse keys, tracing is skipped and the agent runs fine on the built-in print
-hooks. `.env` is git-ignored.
+`.env` (git-ignored) is loaded at startup, so its values reach both the CLI and the API
+server. At minimum set `ANTHROPIC_API_KEY` (required for the LLM-backed commands and
+`/ask` / `/chat`). The `LANGFUSE_*` keys are optional — leave the placeholders and tracing
+is skipped, with the agent running fine on the built-in print hooks. You can also just
+`export ANTHROPIC_API_KEY=...` in your shell instead of using `.env`.
 
 ## Usage
 

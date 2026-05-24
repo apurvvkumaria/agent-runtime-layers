@@ -86,7 +86,8 @@ Nothing imports `agent`.
 | `core.py` | The agent runtime, framework-agnostic. ReAct prompts, `build_memory()`, the two builders — `build_chat_agent()` (memory) and `build_single_shot_agent()` (none), `new_session_id()`, the `stream_answer()` streaming loop, and `load_recent_turns()`. Imports `tools` + `hooks`. |
 | `api.py` | FastAPI app with async endpoints — `POST /ask`, `POST /chat` (per-session in-memory agents), `GET /metrics/{cluster}`, `GET /calc?expr=`, `GET /health` — plus CORS. Imports `core`. |
 | `agent.py` | The Click CLI only: `chat`, `ask`, `research`, `calc`, `metrics`, `history`, `serve` (starts `api.app` via uvicorn). The REPL (`converse`) lives here. Imports `core` + `api`. |
-| `.env` | Local secrets (`LANGFUSE_*`). Git-ignored; ships with `your-...` placeholders. |
+| `.env.example` | Committed template of required env vars (`ANTHROPIC_API_KEY`, `LANGFUSE_*`). Copy to `.env` and fill in. |
+| `.env` | Local secrets, loaded by `python-dotenv`. Git-ignored. |
 | `.agent_history.json` | Persisted conversation memory (`FileChatMessageHistory`), so the CLI's memory survives across invocations. Git-ignored; created on first turn. |
 | `main.py` | The uv-generated stub. Not used by the agent; safe to ignore or repurpose. |
 | `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
