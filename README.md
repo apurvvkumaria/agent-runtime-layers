@@ -1,20 +1,17 @@
 # langchain-agent-layers
 
-A small ReAct research agent — **Claude + LangChain** — built up in **seven deliberate
+A small ReAct research agent — **Claude + LangChain** — built up in **eight deliberate
 layers**, each adding one agent-runtime capability. It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
-calling, memory, streaming, lifecycle hooks, production tracing, and a real CLI.
-
-Everything lives in a single readable file (`agent.py`) so the moving parts stay visible.
+calling, memory, streaming, lifecycle hooks, production tracing, a CLI, and a REST API.
 
 ```bash
 uv run python agent.py ask "What is a Merkle tree?"
 ```
 
-## The seven layers
+## The eight layers
 
-The agent was built incrementally; each layer adds one capability on top of the last. They
-all coexist in the current code — this is the conceptual progression, not separate files.
+The agent was built incrementally; each layer adds one capability on top of the last.
 
 | Layer | Capability | Runtime concept |
 |---|---|---|
@@ -24,7 +21,8 @@ all coexist in the current code — this is the conceptual progression, not sepa
 | **4 — Streaming output** | Final answer streams token-by-token | Token streaming vs. step streaming: `astream_events` exposes the chat model's individual tokens, surfaced via `async for`. |
 | **5 — Custom tool + hooks** | A domain tool + explicit observability | Callbacks are the framework's lifecycle hooks — `on_tool_start/end`, `on_llm_start/end` — the explicit version of what `verbose=True` does implicitly. |
 | **6 — Production observability** | Structured traces in LangFuse | Same callback mechanism, durable structured spans (tool/LLM, latency, tokens) instead of stdout. Degrades gracefully to print hooks when unconfigured. |
-| **7 — CLI with multiple front doors** | One agent, several entry points | A Click CLI; memory persisted to disk so it survives across separate command processes. |
+| **7 — CLI with multiple front doors** | One agent, several entry points | A Click CLI; memory persisted to disk so it survives across separate command processes. Single-shot `ask` uses a memory-free agent to keep its prompt small. |
+| **8 — Separation of concerns + REST API** | Modular package; an HTTP front door | Split into `tools` / `hooks` / `core` / `api` / `agent` with one-way imports, plus a FastAPI server. The runtime is decoupled from its delivery — CLI and API share the same core; the API isolates memory per `session_id`. |
 
 ## How it works
 
@@ -52,6 +50,7 @@ an `Observation:` and re-prompts — looping until the model emits `Final Answer
 | `langfuse` | Optional production tracing via the LangChain callback handler. |
 | `python-dotenv` | Loads `.env` so credentials stay out of source. |
 | `click` | The CLI framework and auto-generated `--help`. |
+| `fastapi` / `uvicorn` | The REST API layer and the ASGI server that runs it. |
 
 Managed with [uv](https://docs.astral.sh/uv/). Requires Python 3.13+.
 
@@ -84,25 +83,44 @@ uv run python agent.py research "topic" -o report.md   # research → markdown f
 uv run python agent.py calc "150 * 223.48"             # direct calculator, no LLM
 uv run python agent.py metrics prod-us-east-1          # direct metrics tool, no LLM
 uv run python agent.py history             # last 10 turns from saved memory
-uv run python agent.py serve --port 8000   # placeholder for a future REST API
+uv run python agent.py serve --port 8000   # start the FastAPI REST server
 ```
 
 - **`chat`, `ask`, `research`** hit the LLM (need `ANTHROPIC_API_KEY`) and carry LangFuse
   traces when configured.
-- **`calc`, `metrics`, `history`, `serve`** call tools/memory directly — no API key, no
-  network, instant.
+- **`calc`, `metrics`, `history`** call tools/memory directly — no API key, no network, instant.
 
 In `chat`, the agent prints its Thought / Action / Observation loop, then streams the final
 answer. Follow-up questions resolve against memory. Exit with `exit`/`quit` or Ctrl+C.
+
+### REST API
+
+Start the server with `agent serve` (or `uvicorn api:app`), then:
+
+```bash
+curl localhost:8000/health
+curl "localhost:8000/calc?expr=150*223.48"
+curl localhost:8000/metrics/prod-us-east-1
+curl -X POST localhost:8000/ask  -H 'Content-Type: application/json' -d '{"question":"What is X?"}'
+curl -X POST localhost:8000/chat -H 'Content-Type: application/json' -d '{"message":"Hi","session_id":"s1"}'
+```
+
+`/chat` keeps isolated per-session memory keyed by `session_id`. Interactive docs at `/docs`.
 
 ## Project structure
 
 | File | What it does |
 |---|---|
-| `agent.py` | The whole agent + CLI: tools, ReAct prompt, memory, streaming, callbacks, LangFuse handler, and the Click command group. |
+| `tools.py` | Tool definitions (`calculator`, `storage_metrics`, web search) + `get_tools()`. |
+| `hooks.py` | Print-based `StepLogger` callbacks and LangFuse setup; `get_callbacks()` / `flush_traces()`. |
+| `core.py` | The framework-agnostic runtime: ReAct prompts, memory, agent builders, `stream_answer()`. |
+| `api.py` | FastAPI app: `/ask`, `/chat`, `/metrics`, `/calc`, `/health` + CORS. |
+| `agent.py` | The Click CLI; `serve` runs the API via uvicorn. |
 | `.env` | Local secrets (`LANGFUSE_*`). Git-ignored. |
 | `.agent_history.json` | Persisted conversation memory. Git-ignored; created on first turn. |
 | `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
+
+Import direction is one-way: `tools`/`hooks` ← `core` ← `agent`/`api`.
 
 ## Notes
 

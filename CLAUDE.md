@@ -6,12 +6,12 @@ A hands-on learning project for understanding **agent runtime patterns** by buil
 small research agent from scratch. The goal is to build intuition for how agent frameworks
 actually work under the hood, not to ship a product.
 
-The agent (`agent.py`) is a Click CLI with multiple front doors over one ReAct agent: it
-reasons with Claude, calls tools (web search, a calculator, and a fake storage-metrics
-backend) to gather facts, remembers the conversation across turns (persisted to disk),
-streams its final answer token-by-token, and emits both print-based hooks and structured
-LangFuse traces. Every reasoning step is visible. It was built up in seven deliberate
-layers (see below), each adding one runtime capability.
+The agent has two front doors — a Click CLI (`agent.py`) and a FastAPI REST server
+(`api.py`) — over one shared ReAct core (`core.py`): it reasons with Claude, calls tools
+(web search, a calculator, and a fake storage-metrics backend) to gather facts, remembers
+the conversation across turns, streams its final answer token-by-token, and emits both
+print-based hooks and structured LangFuse traces. Every reasoning step is visible. It was
+built up in eight deliberate layers (see below), each adding one runtime capability.
 
 ## How to run it
 
@@ -25,12 +25,25 @@ uv run python agent.py research "topic" -o report.md   # research → markdown f
 uv run python agent.py calc "150 * 223.48"             # direct calculator, no LLM
 uv run python agent.py metrics prod-us-east-1          # direct metrics, no LLM
 uv run python agent.py history             # last 10 turns from saved memory
-uv run python agent.py serve --port 8000   # placeholder (FastAPI in a later layer)
+uv run python agent.py serve --port 8000   # start the FastAPI REST server
 ```
 
 `chat`, `ask`, and `research` hit the LLM (need the API key) and carry LangFuse traces.
-`calc`, `metrics`, `history`, and `serve` call tools/memory directly — no API key, no
-network, instant.
+`calc`, `metrics`, and `history` call tools/memory directly — no API key, no network, instant.
+
+The same capabilities are also exposed over HTTP. Start the server with
+`agent serve` (or `uvicorn api:app`), then:
+
+```bash
+curl localhost:8000/health
+curl "localhost:8000/calc?expr=150*223.48"
+curl localhost:8000/metrics/prod-us-east-1
+curl -X POST localhost:8000/ask  -H 'Content-Type: application/json' -d '{"question":"What is X?"}'
+curl -X POST localhost:8000/chat -H 'Content-Type: application/json' -d '{"message":"Hi","session_id":"s1"}'
+```
+
+`/chat` keeps per-session memory keyed by `session_id` (isolated, in-process — distinct
+from the CLI's single shared history file). Interactive API docs at `/docs`.
 
 In `chat` you get an interactive prompt; the agent prints its Thought / Action / Observation
 loop (`verbose=True`), then streams the final answer below a separator. Follow-ups resolve
@@ -57,19 +70,28 @@ This project uses **uv** for dependency and environment management. Add deps wit
 | `langfuse` | Production observability — sends each run to LangFuse as structured spans (tool calls, LLM calls, latency, token counts). |
 | `python-dotenv` | Loads `.env` at startup so credentials (incl. `LANGFUSE_*`) stay out of the source. |
 | `click` | The CLI framework — command groups, arguments/options, and auto-generated `--help`. |
+| `fastapi` | The REST API layer (`api.py`) — async endpoints, request validation, CORS. |
+| `uvicorn` | ASGI server that runs the FastAPI app (`agent serve`). |
 
 ## Project structure
 
+The code is split by responsibility. Dependency direction is one-way:
+`tools`/`hooks` ← `core` ← (`agent`, `api`); `agent` also imports `api` for `serve`.
+Nothing imports `agent`.
+
 | File | What it does |
 |---|---|
-| `agent.py` | The whole agent + CLI. Two builders share `_build_llm_and_tools()`: `build_chat_agent()` adds file-backed `ConversationBufferMemory` + the `{chat_history}` prompt (used by `chat`/`research`); `build_single_shot_agent()` has no memory and a history-free prompt (used by `ask`). `StepLogger` is the print-hook callback; `build_langfuse_handler()` returns the LangFuse callback (or `None`). `stream_answer()` streams the final answer via `astream_events`, attaches callbacks per-call, and returns the answer text; `converse()` is the async REPL. The `cli` Click group defines the commands (`chat`, `ask`, `research`, `calc`, `metrics`, `history`, `serve`); the group callback loads `.env`. |
+| `tools.py` | All tool definitions: `calculator` (safe AST eval), `storage_metrics` (synthetic), and `DuckDuckGoSearchRun`. Exports `get_tools()`. Tools are also imported directly for the no-LLM `calc`/`metrics` paths. |
+| `hooks.py` | Observability. `StepLogger` (print-based `on_tool_*`/`on_llm_*` callbacks) and the LangFuse handler setup. Exports `get_callbacks()` (print hooks + LangFuse when configured; LangFuse handler cached per process) and `flush_traces()`. |
+| `core.py` | The agent runtime, framework-agnostic. ReAct prompts, `build_memory()`, the two builders — `build_chat_agent()` (memory) and `build_single_shot_agent()` (none), `new_session_id()`, the `stream_answer()` streaming loop, and `load_recent_turns()`. Imports `tools` + `hooks`. |
+| `api.py` | FastAPI app with async endpoints — `POST /ask`, `POST /chat` (per-session in-memory agents), `GET /metrics/{cluster}`, `GET /calc?expr=`, `GET /health` — plus CORS. Imports `core`. |
+| `agent.py` | The Click CLI only: `chat`, `ask`, `research`, `calc`, `metrics`, `history`, `serve` (starts `api.app` via uvicorn). The REPL (`converse`) lives here. Imports `core` + `api`. |
 | `.env` | Local secrets (`LANGFUSE_*`). Git-ignored; ships with `your-...` placeholders. |
-| `.agent_history.json` | Persisted conversation memory (`FileChatMessageHistory`), so memory survives across CLI invocations. Git-ignored; created on first turn. |
-| `main.py` | The uv-generated stub (`Hello from agent-practice!`). Not used by the agent; safe to ignore or repurpose. |
-| `pyproject.toml` | Project metadata and dependencies (managed by uv). |
-| `uv.lock` | Pinned dependency lockfile. |
+| `.agent_history.json` | Persisted conversation memory (`FileChatMessageHistory`), so the CLI's memory survives across invocations. Git-ignored; created on first turn. |
+| `main.py` | The uv-generated stub. Not used by the agent; safe to ignore or repurpose. |
+| `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
 
-## The seven layers
+## The eight layers
 
 The agent was built incrementally, each layer adding one agent-runtime capability on top of
 the last. They all live in the current `agent.py`; this is the conceptual progression, not
@@ -84,6 +106,7 @@ separate files.
 | **5 — Custom tool + hooks** | A domain tool, and explicit lifecycle observability | `@tool storage_metrics(cluster_name)` returns fake-but-realistic distributed-storage metrics. `StepLogger(BaseCallbackHandler)` implements `on_tool_start/end` (with timing) and `on_llm_start/end` (with token counts). | Callbacks are the framework's lifecycle hooks — the explicit version of what `verbose=True` does implicitly. Note: `on_chat_model_start` falls back to `on_llm_start` for chat models, so the `on_llm_start` hook fires for Claude. |
 | **6 — Production observability** | Structured traces in LangFuse | `build_langfuse_handler()` returns a LangFuse `CallbackHandler` when `LANGFUSE_*` keys are real (else `None`, degrading to print hooks). `python-dotenv` loads `.env`; the LLM commands flush the client on exit. Trace attributes (`run_name`, `langfuse_session_id`, `langfuse_tags`) are set per-call via `config` metadata, per the official Langfuse skill pattern. | Print hooks are for *you, now*; tracing is for *operators, later* — same callback mechanism, durable structured spans (tool/LLM spans, latency, token counts) instead of stdout. Both run together; LangFuse failures never crash the agent. |
 | **7 — CLI with multiple front doors** | One agent, several entry points | A Click `cli` group: `chat` (REPL), `ask` (one-shot), `research` (saves markdown, `stream_answer` now returns the answer text), `calc`/`metrics` (direct tool calls, no LLM), `history` (reads saved memory), `serve` (placeholder). Memory moved to `FileChatMessageHistory` so it persists across processes. Two agent builders: memory-backed (`chat`/`research`) vs. memory-free (`ask`). | Process boundaries force state to be externalized: `history` runs in a *different* process than `chat`, so in-process memory would always be empty — hence the on-disk store. Match the agent to the command: a single-shot `ask` must not replay accumulated history into its prompt, or input tokens balloon with every past turn. LLM commands and direct-tool commands are deliberately separate front doors over the same core. |
+| **8 — Separation of concerns + REST API** | Modular package; a second front door | Split into `tools.py` / `hooks.py` / `core.py` / `api.py` / `agent.py` with one-way imports. Added a FastAPI app (`api.py`) with async `/ask`, `/chat`, `/metrics`, `/calc`, `/health` + CORS; `serve` now runs it via uvicorn. `/chat` keeps isolated per-session memory in a dict. | The runtime (`core`) is decoupled from its delivery (CLI vs. HTTP) — both front doors call the same builders and `stream_answer`. Different transports want different memory models: the CLI shares one file; the API isolates per `session_id`, so `build_chat_agent(memory=...)` takes an injected buffer. |
 
 ## Key concepts being learned
 
