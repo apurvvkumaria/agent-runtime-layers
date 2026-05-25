@@ -31,6 +31,7 @@ uv run python agent.py serve --port 8000   # start the FastAPI REST server
 uv run python agent.py mcp-serve --port 3000  # start the MCP server (SSE)
 uv run python agent.py sync-prompt         # push local single-shot prompt to LangFuse
 uv run python agent.py memory-stats        # vector-store turns + estimated token savings
+uv run python agent.py memory-clear        # wipe all stored turns (--yes to skip prompt)
 uv run python agent.py test                # run tests + evals, print a summary
 ```
 

@@ -245,5 +245,22 @@ def memory_stats() -> None:
         click.echo("(no turns stored yet — run `agent chat` to populate the store)")
 
 
+@cli.command(name="memory-clear")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def memory_clear(yes: bool) -> None:
+    """Wipe all stored turns from the vector-store memory."""
+    from memory.vector_store import VectorStoreMemory
+
+    mem = VectorStoreMemory()
+    turns = mem.stats()["turns"]
+    if turns == 0:
+        click.echo("Vector store is already empty — nothing to clear.")
+        return
+    if not yes:
+        click.confirm(f"Delete all {turns} stored turn(s) from {mem.store_dir}?", abort=True)
+    mem.clear()
+    click.echo(f"Cleared {turns} turn(s) from the vector store.")
+
+
 if __name__ == "__main__":
     cli()
