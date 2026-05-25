@@ -170,7 +170,39 @@ openshell gateway add "https://127.0.0.1:${GATEWAY_PORT}" --local --name "$GATEW
 
 openshell status
 
-echo
-echo "✓ Gateway ready."
-echo "  Try: openshell sandbox create"
-echo "  Or:  openshell sandbox create -- claude   # if Claude Code is on PATH inside the sandbox image"
+# --- Usage cheat-sheet ---------------------------------------------------
+# The research is done — these commands just work against the gateway above.
+# Sandbox creation REQUIRES --from <image>; a bare `sandbox create` won't work.
+
+cat <<EOF
+
+✓ Gateway ready and registered as "${GATEWAY_NAME}".
+
+Create a sandbox:
+  scripts/create-sandbox.sh                            # openclaw image, one-shot 'claude' (+ health check)
+  openshell sandbox create --from openclaw -- claude   # same, explicit
+  openshell sandbox create --from openclaw             # create, leave running
+  openshell sandbox create --from base                 # minimal, no agent CLI
+
+  ALWAYS pass --from. A bare 'sandbox create -- claude' silently falls back to
+  the 'base' image (no claude on PATH) and the CLI hangs on "Requesting sandbox...".
+
+Images:
+  openclaw (Claude Code) — published image (ghcr.io/.../openclaw:latest), NOT in
+                           the repo's sandboxes/ dir; referenced in CLI --help.
+  Community (dev/OpenShell-Community/sandboxes/): base droid gemini ollama nvidia-gpu sdg
+
+Manage:
+  openshell sandbox list                       # what's running
+  openshell sandbox connect <name>             # interactive shell (use this, not bare exec)
+  openshell sandbox exec --tty <name> -- <cmd> # one-shot cmd; --tty or output is garbled
+  openshell sandbox delete <name>              # tear down one sandbox
+  openshell gateway info                       # current gateway details
+
+Logs / health ("Created" != "healthy" — supervisor may crashloop on cert/JWT):
+  docker logs openshell-gateway -f             # control plane (gateway)
+  docker logs openshell-<name>-<uuid> --tail 30   # data plane; look for:
+                                                  #   "OpenShell Sandbox Supervisor success"
+
+Full reset: scripts/teardown-openshell.sh      # wipes TLS material -> re-bootstrap
+EOF
