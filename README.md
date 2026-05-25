@@ -77,6 +77,20 @@ The ReAct prompt instructs Claude to interleave reasoning (`Thought:`) and actio
 (`Action:` / `Action Input:`). After each tool call, the executor feeds the result back as
 an `Observation:` and re-prompts — looping until the model emits `Final Answer:`.
 
+## Numbers
+
+Rough figures from a single run each (Claude Sonnet) — enough to make the tradeoffs
+concrete; they vary with the question and model load. Reproduce with `agent compare "…"`,
+`agent context-stats "…"`, `uv run python -m evals.memory_comparison`, and
+`uv run python -m evals.rag_comparison`.
+
+| Comparison | Result |
+|---|---|
+| **Vector vs. buffer memory** (L12) | After 8 turns, replaying history costs **440 tokens** (buffer = full transcript) vs **150 tokens** (vector = top-k retrieval) — **~66% fewer** history tokens, and the gap widens as the conversation grows. |
+| **RAG, on/off** (L14) | "What does OpenShell's broker do?" — **without RAG: 15 input tokens but ungrounded** (the model declines/guesses); **with RAG: 276 input tokens, grounded in `docs/`** and correct. RAG buys a sourced answer for **+261 input tokens**. |
+| **Context budgeting** (L14) | A storage/latency question fills **362 / 5,700** budgeted tokens (system 175 · question 21 · retrieved 166), +1,000 reserved for the response — **6.4%** of the window, with `sla_thresholds.md` auto-injected. |
+| **LangGraph vs. Strands** (L15), `150 × 223.48` | Same answer (33,522), same quality (0.7). **LangGraph: 4 nodes · 194 tokens · 2.7 s.** **Strands: 2 model steps · 3,079 tokens · 5.8 s.** The fixed graph used **~16× fewer tokens and ~2× less time** than model-driven orchestration — the cost of letting the model route. |
+
 ## Stack
 
 | Dependency | Role |
