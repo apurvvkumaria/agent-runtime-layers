@@ -5,12 +5,20 @@ the LLM reads), `skill.py` (an `async def <name>(arg, ctx=None)`), and `policy.y
 (skill-level capability policy). `auto_discover()` scans for them, parses each
 `SKILL.md`, imports the function, and wraps it as a LangChain `Tool` so the ReAct
 agent can call a skill by name exactly like any other tool.
+
+Versioning & deprecation (Layer 25): `SKILL.md` declares `## Version` (semver) and
+`## Status` (active|deprecated). A deprecated skill adds a `## Deprecation` block
+(`Replaced by:` / `Remove after:`). Deprecated skills are **excluded from the
+agent's tool list** (`as_tools()` defaults to active-only, so the agent won't route
+to them), but stay resolvable via `get_skill()` for backward-compatible direct
+callers — and emit a `[deprecated]` warning when invoked.
 """
 
 from __future__ import annotations
 
 import importlib
 import re
+import sys
 from pathlib import Path
 
 from langchain_core.tools import Tool
@@ -26,14 +34,27 @@ def _section(text: str, title: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _first_line(text: str, title: str, default: str = "") -> str:
+    body = _section(text, title)
+    return body.splitlines()[0].strip() if body else default
+
+
 def _parse_skill_md(path: Path) -> dict:
     text = path.read_text(encoding="utf-8")
     tools_block = _section(text, "Tools used internally")
-    tools_used = re.findall(r"^[-*]\s*`?([A-Za-z0-9_]+)`?", tools_block, re.M)
+    deprecation = _section(text, "Deprecation")
+    status = _first_line(text, "Status", "active").lower()
+    replaced = re.search(r"[Rr]eplaced by:\s*`?([A-Za-z0-9_]+)`?", deprecation)
+    remove_after = re.search(r"[Rr]emove after:\s*([0-9][0-9-]+)", deprecation)
     return {
         "what": _section(text, "What it does"),
         "when": _section(text, "When to use it"),
-        "tools_used": tools_used,
+        "tools_used": re.findall(r"^[-*]\s*`?([A-Za-z0-9_]+)`?", tools_block, re.M),
+        "version": _first_line(text, "Version", "0.0.0"),
+        "status": status,
+        "deprecated": status == "deprecated" or bool(deprecation),
+        "replaced_by": replaced.group(1) if replaced else None,
+        "remove_after": remove_after.group(1) if remove_after else None,
     }
 
 
@@ -59,37 +80,78 @@ class SkillRegistry:
 
     def list_skills(self) -> list[dict]:
         return [
-            {"name": n, "description": s["meta"]["what"], "tools_used": s["meta"]["tools_used"]}
+            {
+                "name": n,
+                "description": s["meta"]["what"],
+                "tools_used": s["meta"]["tools_used"],
+                "version": s["meta"]["version"],
+                "status": s["meta"]["status"],
+                "deprecated": s["meta"]["deprecated"],
+                "replaced_by": s["meta"]["replaced_by"],
+                "remove_after": s["meta"]["remove_after"],
+            }
             for n, s in self._skills.items()
         ]
+
+    def _deprecation_note(self, name: str, meta: dict) -> str:
+        note = f"[deprecated] skill '{name}' (v{meta['version']}) is deprecated"
+        if meta["replaced_by"]:
+            note += f" — use '{meta['replaced_by']}'"
+        if meta["remove_after"]:
+            note += f"; removed after {meta['remove_after']}"
+        return note
 
     def _as_tool(self, name: str, entry: dict) -> Tool:
         fn, meta = entry["fn"], entry["meta"]
         description = meta["what"]
         if meta["when"]:
             description += f"\n\nWhen to use: {meta['when']}"
+        if meta["deprecated"]:
+            replacement = f" — use {meta['replaced_by']}" if meta["replaced_by"] else ""
+            description = f"[DEPRECATED{replacement}] " + description
+
+        def _warn() -> None:
+            if meta["deprecated"]:
+                print(self._deprecation_note(name, meta), file=sys.stderr)
 
         def _sync(arg: str) -> str:  # ReAct passes a single Action Input string
+            _warn()
             return run_coro(fn(arg))
 
         async def _async(arg: str) -> str:
+            _warn()
             return await fn(arg)
 
         return Tool(name=name, description=description, func=_sync, coroutine=_async)
 
     def get_skill(self, name: str) -> Tool:
-        """Return a single skill as a callable LangChain `Tool` (use `.invoke(arg)`)."""
+        """Return a single skill as a callable LangChain `Tool` (use `.invoke(arg)`).
+
+        Works for deprecated skills too — they stay resolvable for compatibility and
+        warn on use. (`as_tools()` is what hides them from the agent's tool list.)
+        """
         return self._as_tool(name, self._skills[name])
 
-    def as_tools(self) -> list[Tool]:
-        return [self._as_tool(n, e) for n, e in self._skills.items()]
+    def as_tools(self, include_deprecated: bool = False) -> list[Tool]:
+        """The skills to wire into an agent — active only by default.
 
-    def inject_into_agent(self, executor):
-        """Append all discovered skills to a built executor's tool list.
+        Deprecated skills are dropped so the agent never routes to them; pass
+        `include_deprecated=True` to keep them callable from the agent for a
+        compatibility window.
+        """
+        return [
+            self._as_tool(n, e)
+            for n, e in self._skills.items()
+            if include_deprecated or not e["meta"]["deprecated"]
+        ]
+
+    def inject_into_agent(self, executor, include_deprecated: bool = False):
+        """Append discovered skills to a built executor's tool list.
 
         Note: the ReAct prompt enumerates tools at *build* time, so the canonical
         wiring is including `as_tools()` in `get_tools()`. This is for dynamic
         addition (e.g. native tool-calling agents that re-read the tool list).
         """
-        executor.tools = list(getattr(executor, "tools", [])) + self.as_tools()
+        existing = list(getattr(executor, "tools", []))
+        executor.tools = existing + self.as_tools(include_deprecated=include_deprecated)
         return executor

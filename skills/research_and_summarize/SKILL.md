@@ -1,5 +1,11 @@
 # research_and_summarize
 
+## Version
+1.0.0
+
+## Status
+active
+
 ## What it does
 Researches a topic on the web and returns a structured markdown report, tied to live storage context.
 

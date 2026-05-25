@@ -173,9 +173,15 @@ def skills_list() -> None:
     if not items:
         click.echo("No skills registered.")
         return
-    click.echo(f"{len(items)} skill(s) registered:\n")
+    active = sum(1 for s in items if not s["deprecated"])
+    click.echo(f"{len(items)} skill(s) registered ({active} active):\n")
     for s in items:
-        click.echo(f"• {s['name']}")
+        if s["deprecated"]:
+            tag = f"  [DEPRECATED → {s['replaced_by'] or '?'}"
+            tag += f", remove after {s['remove_after']}]" if s["remove_after"] else "]"
+        else:
+            tag = ""
+        click.echo(f"• {s['name']}  v{s['version']}{tag}")
         click.echo(f"    {' '.join(s['description'].split())}")
         click.echo(f"    tools used: {', '.join(s['tools_used']) or '(none listed)'}\n")
 

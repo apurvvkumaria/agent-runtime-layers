@@ -1,5 +1,11 @@
 # storage_health_check
 
+## Version
+1.0.0
+
+## Status
+active
+
 ## What it does
 Checks a storage cluster's live metrics against the SLA thresholds and returns a health assessment.
 
