@@ -283,6 +283,7 @@ have shipped plausible-but-wrong assumptions):
 | `.env` | Local secrets (`LANGFUSE_*`). Git-ignored. |
 | `.agent_history.json` | Persisted conversation memory. Git-ignored; created on first turn. |
 | `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
+| `CLAUDE.md` | Project guide for [Claude Code](https://claude.com/claude-code) — the full layer-by-layer build log, runtime concepts, and conventions; also useful orientation for a human reader. |
 
 Import direction is one-way: `tools`/`hooks` ← `core` ← `agent`/`api`/`mcp_integration.server`.
 
