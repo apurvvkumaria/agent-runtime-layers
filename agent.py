@@ -164,6 +164,44 @@ def skill(topic: str) -> None:
     click.echo(report)
 
 
+@cli.command(name="sandbox-ask")
+@click.argument("question")
+@click.option(
+    "--keep/--no-keep", default=False, show_default=True,
+    help="Keep the sandbox after the run instead of deleting it.",
+)
+@click.option(
+    "--image", default=None,
+    help="Sandbox image to create from (else $OPENSHELL_SANDBOX_IMAGE, default 'agent-sandbox').",
+)
+def sandbox_ask(question: str, keep: bool, image: str | None) -> None:
+    """Answer QUESTION by running `ask` inside a policy-constrained OpenShell sandbox."""
+    from sandbox_runner import SandboxError, run_in_sandbox
+
+    try:
+        answer = run_in_sandbox(question, keep=keep, image=image)
+    except SandboxError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo("\n--- Answer (from sandbox) ---")
+    click.echo(answer)
+
+
+@cli.command(name="sandbox-info")
+def sandbox_info() -> None:
+    """Show gateway status, running sandboxes, and the active sandbox policy."""
+    from sandbox_runner import SandboxError, gateway_status, list_sandboxes, policy_text
+
+    try:
+        click.echo("=== Gateway status ===")
+        click.echo(gateway_status())
+    except SandboxError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo("\n=== Sandboxes ===")
+    click.echo(list_sandboxes())
+    click.echo("\n=== Active policy (openshell/policy.yaml) ===")
+    click.echo(policy_text())
+
+
 @cli.command()
 def history() -> None:
     """Show the last 10 conversation turns from saved memory."""

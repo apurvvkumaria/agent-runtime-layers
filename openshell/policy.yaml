@@ -1,0 +1,78 @@
+# OpenShell sandbox policy for running the agent (Layer 21).
+#
+# NOTE ON SCHEMA: this is the REAL OpenShell v0.0.47 policy schema (verified
+# against the live gateway + the community base/gemini policies). It differs
+# from a naive `sandbox: {resources, network: {allow/deny}, filesystem:
+# {writable/denied}}` shape, which the gateway rejects ("unknown field
+# `sandbox`"). The mapping from the intended limits:
+#
+#   resources.cpu_cores/memory_mb  -> NOT a policy field. They're create-time
+#                                     flags; sandbox_runner passes `--cpu 2
+#                                     --memory 1Gi`.
+#   network: allow anthropic + ddg -> network_policies below. The model is
+#     default-deny and keyed to the BINARY making the call, so we allow the
+#     sandbox's python interpreter to reach the Anthropic API (reasoning) and
+#     DuckDuckGo (the web-search tool). Everything else is implicitly denied —
+#     no explicit `deny: '*'` needed.
+#   filesystem: writable [/sandbox/workspace,/tmp], denied [/etc,/home,/root]
+#                                  -> filesystem_policy.read_write is /sandbox
+#     (which contains the /sandbox/workspace we upload into) + /tmp; /home and
+#     /root are simply not listed, so they're denied. /etc stays read_only
+#     (not writable, satisfying the intent) because a hard deny breaks DNS /
+#     CA certs / TLS and the sandbox won't run.
+
+version: 1
+
+# --- Sandbox setup configuration (queried once at startup) ---
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /app
+    - /etc          # read-only (not writable) — a full deny breaks DNS/TLS
+    - /var/log
+  read_write:
+    - /sandbox      # contains /sandbox/workspace, where we upload the agent
+    - /tmp
+    - /dev/null
+
+landlock:
+  compatibility: best_effort
+
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+# --- Network policies (queried per-CONNECT request) ---
+#
+# Default-deny. Each named policy binds endpoints to the binaries allowed to
+# reach them; binary identity is resolved via /proc/net/tcp inode + /proc/{pid}/exe
+# (ancestors and cmdline paths also matched), with SHA256 TOFU integrity in Rust.
+
+network_policies:
+  agent:
+    name: agent
+    endpoints:
+      # Reasoning: Claude. (`access: full` like the community claude_code policy.)
+      - { host: api.anthropic.com, port: 443, protocol: rest, enforcement: enforce, access: full, tls: terminate }
+      # Web-search tool (DuckDuckGoSearchRun via ddgs). OPA host matching is exact
+      # equality (no glob), so the ddg hosts the client actually hits are listed.
+      - { host: duckduckgo.com, port: 443 }
+      - { host: html.duckduckgo.com, port: 443 }
+      - { host: lite.duckduckgo.com, port: 443 }
+      - { host: links.duckduckgo.com, port: 443 }
+    binaries:
+      # The agent runs as `python agent.py ask`. The interpreter path is
+      # image-dependent; list the common venv/system locations (a uv-built image
+      # puts it under /sandbox/.venv, mirroring the community `pypi` policy).
+      - { path: /sandbox/.venv/bin/python }
+      - { path: /sandbox/.venv/bin/python3 }
+      - { path: /app/.venv/bin/python }
+      - { path: /app/.venv/bin/python3 }
+      - { path: /usr/local/bin/python }
+      - { path: /usr/local/bin/python3 }
+      - { path: /usr/bin/python3 }

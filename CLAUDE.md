@@ -16,8 +16,10 @@ and pulls in docs via RAG, and emits both print-based hooks and structured LangF
 That core is a ReAct agent (Claude + LangChain); later layers add a separate LangGraph
 multi-agent pipeline — and the same pipeline rebuilt with Strands — as contrasting
 paradigms. It can also run autonomously — on a cron schedule or a self-directing heartbeat
-loop, with failed runs captured in a dead-letter queue. Every reasoning step is visible. It
-was built up in twenty deliberate layers (see below), each adding one runtime capability.
+loop, with failed runs captured in a dead-letter queue. It can also run itself inside an
+OpenShell sandbox, under a declarative network/filesystem policy. Every reasoning step is
+visible. It was built up in twenty-one deliberate layers (see below), each adding one runtime
+capability.
 
 ## How to run it
 
@@ -48,6 +50,8 @@ uv run python agent.py dlq-retry           # replay transient failures (backoff)
 uv run python agent.py dlq-clear           # clear permanent failures after review
 uv run python agent.py ask "..." --timeout 1   # force a tool_timeout into the DLQ (testing)
 uv run python agent.py context-stats "..." # token budget + RAG docs for a question
+uv run python agent.py sandbox-info        # OpenShell gateway status + sandboxes + active policy
+uv run python agent.py sandbox-ask "..."   # run `ask` inside an OpenShell sandbox, then delete it
 uv run python agent.py test                # run tests + evals, print a summary
 ```
 
@@ -135,13 +139,15 @@ Nothing imports `agent`.
 | `mcp_integration/` | MCP, both directions. `client.py` wraps the official filesystem MCP server as the `filesystem` LangChain tool (sandboxed to `docs/`); `server.py` exposes `ask_agent` / `get_storage_metrics` / `calculate` as MCP tools via FastMCP. Named `mcp_integration`, not `mcp`, to avoid shadowing the `mcp` SDK. |
 | `docs/` | Markdown read by the `filesystem` tool — `openShell_overview.md`, `sla_thresholds.md`, `agent_patterns.md`. The MCP filesystem server's only allowed directory. |
 | `scripts/` | OpenShell local-dev tooling (not part of the agent runtime). `setup-openshell.sh` brings up the OpenShell gateway as a Docker container on macOS + Docker Desktop with full mTLS (PKI generation w/ the `host.openshell.internal` SAN, host:host bind mounts), registers it with the CLI, and prints a usage cheat-sheet. `create-sandbox.sh` is a one-command sandbox helper (defaults to the `openclaw` image + one-shot `claude`; verifies supervisor health on the leave-running path). `teardown-openshell.sh` is the full reset (deletes sandboxes/containers, unregisters, wipes host TLS state). |
+| `sandbox_runner.py` | Layer 21 orchestration. Drives the `openshell` CLI (subprocess) to create a policy-constrained sandbox, upload the project source via `docker cp`, run `agent.py ask` inside it via `openshell sandbox exec`, and delete it after. Exposes `run_in_sandbox()` (for `agent sandbox-ask`) + `gateway_status()`/`list_sandboxes()`/`policy_text()` (for `agent sandbox-info`). Uses the CLI binary, never `import openshell`. |
+| `openshell/` | Docs + config for Layer 21 (deliberately NOT a Python package — no `__init__.py` — so it can't shadow the `openshell` SDK). `setup.md` documents the macOS + Docker Desktop gateway setup (socket path, manual `docker run`, registration, why auto-bootstrap fails); `policy.yaml` is the sandbox policy in the real v0.0.47 schema (binary-keyed default-deny egress to Anthropic + DuckDuckGo; `/sandbox`+`/tmp` writable). |
 | `.env.example` | Committed template of required env vars (`ANTHROPIC_API_KEY`, `LANGFUSE_*`). Copy to `.env` and fill in. |
 | `.env` | Local secrets, loaded by `python-dotenv`. Git-ignored. |
 | `.agent_history.json` | Persisted conversation memory (`FileChatMessageHistory`), so the CLI's memory survives across invocations. Git-ignored; created on first turn. |
 | `main.py` | The uv-generated stub. Not used by the agent; safe to ignore or repurpose. |
 | `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
 
-## The twenty layers
+## The twenty-one layers
 
 The agent was built incrementally, each layer adding one agent-runtime capability on top of
 the last. They all live in the current `agent.py`; this is the conceptual progression, not
@@ -169,6 +175,7 @@ separate files.
 | **18 — Autonomous modes** | Run without a human in the loop | `autonomy/scheduler.py`: `AgentScheduler` runs a question on a cron schedule (APScheduler), appending timestamped answers to a file — once immediately to verify, then on schedule. `HeartbeatLoop` polls `tasks.json` every N seconds, runs pending tasks, marks them complete, and queues one agent-suggested follow-up per user task (self-directing, bounded so auto-tasks can't chain). CLI: `schedule` / `heartbeat` / `add-task`. | Up to now every run was human-triggered; this lets the agent run on a clock or off a task queue it can extend itself. Both are long-running blocking processes (like `serve`). The bound on self-direction matters — an agent that can add its own work needs a hard stop, or it runs away. |
 | **19 — Dead-letter queue** | Failed runs are captured, not lost | `dlq/manager.py`: `core.stream_answer` wraps each run; on failure it records to the DLQ with a reason, **classifies** it transient (tool_timeout / api_error_5xx / sandbox_crash) vs. permanent (budget_exceeded / api_error_4xx / max_retries_exceeded), and flags the run 0 in LangFuse. `dlq-retry` replays transient failures with exponential backoff (1s/2s/4s), promoting exhausted ones to permanent; `dlq-stats` / `dlq-clear` report and review. | Autonomous agents fail unattended — without a DLQ those failures vanish. The transient/permanent split decides what to auto-retry vs. surface for a human, and bounded backoff stops a flaky dependency from being hammered. The same idea as a message-queue DLQ, applied to agent runs. |
 | **20 — Skills (composed tools)** | One tool that orchestrates several | `skills/research_and_summarize.py` is a `@tool` that internally runs web search → storage metrics → LLM summarization and returns a structured `## Research Findings` / `## Storage Context` / `## Summary` report. It's in `get_tools()`, so the ReAct agent picks it for "research and summarize" requests, and `agent skill "..."` runs it directly. | A *tool* does one thing; a *skill* packages a fixed multi-tool workflow behind a single tool interface. The agent makes one call and the skill handles the orchestration — encapsulation, vs. the agent (or a LangGraph graph) wiring the steps itself. Same pattern as OpenClaw skills. |
+| **21 — Run inside an OpenShell sandbox** | The agent executes under a declarative sandbox policy | `sandbox_runner.py` drives the `openshell` CLI (subprocess) to create a sandbox under `openshell/policy.yaml`, upload the project source into `/sandbox/workspace` via the Docker control plane, run `agent.py ask` inside it through `openshell sandbox exec`, and delete the sandbox after (`agent sandbox-ask`); `agent sandbox-info` shows gateway status + running sandboxes + the active policy. The policy uses the real OpenShell v0.0.47 schema (`filesystem_policy` / `landlock` / `process` / `network_policies`): **binary-keyed, default-deny** egress that allows the sandbox's python only to `api.anthropic.com` + DuckDuckGo. Setup (macOS + Docker Desktop, full mTLS) is in `openshell/setup.md` + `scripts/`. | Up to now the agent ran on the host with the host's privileges; this runs it as an *isolated, policy-constrained workload* — egress allowlisted per binary (default-deny), filesystem narrowed to `/sandbox`+`/tmp`, resources capped. The split that matters: file delivery happens on the **Docker control plane** (host-side, not policy-governed), while the **agent process** runs under the supervisor's Landlock + egress enforcement — so the policy governs the workload, not the plumbing. (`openshell/` is docs+config only, no `__init__.py`, so it can't shadow the `openshell` SDK as a namespace package — same trap that put MCP in `mcp_integration/`.) |
 
 ## Key concepts being learned
 
