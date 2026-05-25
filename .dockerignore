@@ -1,0 +1,17 @@
+# Keep the Docker build context small. The agent-sandbox image
+# (openshell/agent-sandbox/Dockerfile) only needs pyproject.toml + uv.lock;
+# everything heavy or local is excluded so `docker build … .` is fast.
+.git
+.venv
+chroma_db
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.env
+.agent_history.json
+tasks.json
+dlq/*.json
+report.md
+node_modules

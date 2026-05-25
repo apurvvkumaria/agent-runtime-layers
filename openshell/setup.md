@@ -161,9 +161,15 @@ langchain deps (see prerequisite below), which isn't built here.
 
 **Prerequisite — the sandbox image must already contain the project's Python
 deps.** The policy allows egress only to Anthropic + DuckDuckGo, so the sandbox
-*cannot* reach PyPI to install anything at run time. Either bake the deps into a
-custom image and point at it (`--image <name>` or `OPENSHELL_SANDBOX_IMAGE`), or
-use an image that has them. Override the in-sandbox interpreter with
-`OPENSHELL_SANDBOX_PYTHON` (default `python`, which resolves to the venv python).
-The Anthropic key is passed in by writing a `.env` into the workspace, which the
-agent's `load_dotenv()` picks up.
+*cannot* reach PyPI to install anything at run time. The deps-baked image for
+this is `openshell/agent-sandbox/` — build it and point `sandbox-ask` at it:
+
+```sh
+docker build -f openshell/agent-sandbox/Dockerfile -t agent-sandbox:latest .
+uv run python agent.py sandbox-ask --image agent-sandbox:latest "What is 2 + 2?"
+```
+
+See `openshell/agent-sandbox/README.md` for the details. Override the in-sandbox
+interpreter with `OPENSHELL_SANDBOX_PYTHON` (default `python`, which resolves to
+`/sandbox/.venv/bin/python`). The Anthropic key is passed in by writing a `.env`
+into the workspace, which the agent's `load_dotenv()` picks up.
