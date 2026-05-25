@@ -13,9 +13,9 @@ storage-metrics backend, and an MCP-backed filesystem reader) to gather facts, r
 the conversation across turns (buffer or semantic vector memory), streams its final answer
 token-by-token, loads its system prompts from files (or LangFuse), manages its token budget
 and pulls in docs via RAG, and emits both print-based hooks and structured LangFuse traces.
-A separate LangGraph pipeline composes several agents into a research workflow. Every
-reasoning step is visible. It was built up in fourteen deliberate layers (see below), each
-adding one runtime capability.
+That core is a ReAct agent (Claude + LangChain); a later layer adds a separate LangGraph
+multi-agent pipeline as a contrasting paradigm. Every reasoning step is visible. It was
+built up in fourteen deliberate layers (see below), each adding one runtime capability.
 
 ## How to run it
 
