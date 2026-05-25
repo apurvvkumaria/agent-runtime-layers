@@ -224,6 +224,38 @@ def sandbox_info() -> None:
     click.echo(policy_text())
 
 
+@cli.command(name="marketplace")
+def marketplace_list() -> None:
+    """List skills available in the marketplace and whether each is installed."""
+    from skills.marketplace import SkillMarketplace
+
+    items = SkillMarketplace().available()
+    if not items:
+        click.echo("No skills in the marketplace.")
+        return
+    click.echo(f"Marketplace — {len(items)} skill(s):\n")
+    for s in items:
+        click.echo(f"• {s['name']}  v{s['version']}  [{'installed' if s['installed'] else 'available'}]")
+        click.echo(f"    {s['description']}")
+        click.echo(f"    sha256: {s['sha256'][:16]}…\n")
+
+
+@cli.command(name="marketplace-install")
+@click.argument("name")
+def marketplace_install(name: str) -> None:
+    """Verify (SHA256) and install a marketplace skill into skills/, then load it."""
+    from skills.marketplace import IntegrityError, SkillMarketplace
+
+    try:
+        info = SkillMarketplace().install(name)
+    except IntegrityError as exc:
+        raise click.ClickException(f"refused to install — {exc}") from exc
+    except (KeyError, FileNotFoundError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"✓ verified (sha256) and installed {info['name']} v{info['version']} → skills/{info['name']}/")
+    click.echo("  Discovered by the registry — `agent skills` now lists it and the agent can call it.")
+
+
 @cli.command()
 def history() -> None:
     """Show the last 10 conversation turns from saved memory."""

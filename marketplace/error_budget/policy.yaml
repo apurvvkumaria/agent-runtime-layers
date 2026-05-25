@@ -1,0 +1,14 @@
+# Skill-level capability policy for error_budget (marketplace skill).
+#
+# Pure arithmetic — declares no network and no real filesystem needs. A
+# marketplace skill ships its capability manifest so a consumer can see exactly
+# what it would touch before installing; the SHA256 in the marketplace index
+# covers this file too, so the declared policy can't be tampered with undetected.
+network:
+  egress: []
+filesystem:
+  writable: [/sandbox/output]
+resources:
+  cpu_cores: 1
+  memory_mb: 256
+  timeout_seconds: 5

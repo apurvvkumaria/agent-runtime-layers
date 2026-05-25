@@ -1,0 +1,12 @@
+{
+  "marketplace": "agent-runtime-layers skill registry",
+  "skills": [
+    {
+      "name": "error_budget",
+      "version": "1.0.0",
+      "path": "error_budget",
+      "description": "Compute the monthly error budget (allowed downtime) for a target availability percent.",
+      "sha256": "dcc29b3eca0f28794b05d2fc6df06ef349e3dd72352a1a745a24ad7ec7125c59"
+    }
+  ]
+}
