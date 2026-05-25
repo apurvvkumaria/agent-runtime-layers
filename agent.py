@@ -233,6 +233,11 @@ def memory_stats() -> None:
     click.echo(f"Vector store: {mem.store_dir} ({s['on_disk_bytes']} bytes on disk)")
     click.echo(f"Total turns stored: {s['turns']}")
     click.echo(f"Embedding: {s['embedder']} (dim {s['embedding_dim']})")
+    d = mem.decay_days
+    click.echo(
+        f"Decay thresholds (days): full <{d['summary']}, summary <{d['marker']}, "
+        f"marker <{d['archived']}, archived >={d['archived']}"
+    )
     if s["turns"]:
         t = s["tiers"]
         click.echo(
