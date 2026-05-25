@@ -1,0 +1,17 @@
+# Skill-level capability policy for cluster_briefing.
+#
+# The union of what its sub-skills need: research_and_summarize wants Anthropic +
+# DuckDuckGo egress; storage_health_check wants the SLA doc. A composing skill's
+# policy is the union of its parts. A capability manifest, not the runtime
+# OpenShell sandbox policy (see openshell/policy.yaml).
+network:
+  egress:
+    - allow: api.anthropic.com   # via research_and_summarize -> llm_summarize
+    - allow: duckduckgo.com      # via research_and_summarize -> web_search
+filesystem:
+  readable: [docs/]              # via storage_health_check -> sla_thresholds.md
+  writable: [/sandbox/output]
+resources:
+  cpu_cores: 1
+  memory_mb: 512
+  timeout_seconds: 45            # composes two skills, so a longer budget

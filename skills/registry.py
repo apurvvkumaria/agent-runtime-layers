@@ -124,6 +124,15 @@ class SkillRegistry:
 
         return Tool(name=name, description=description, func=_sync, coroutine=_async)
 
+    def skill_function(self, name: str):
+        """The raw `async def <name>(arg, ctx=None)` for a skill.
+
+        Used by `SkillContext.call_skill` for composition (Layer 26): it runs the
+        sub-skill's function directly with a depth-incremented child context, rather
+        than the LangChain `Tool` wrapper (which targets the agent, ctx-free).
+        """
+        return self._skills[name]["fn"]
+
     def get_skill(self, name: str) -> Tool:
         """Return a single skill as a callable LangChain `Tool` (use `.invoke(arg)`).
 

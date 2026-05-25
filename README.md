@@ -1,9 +1,9 @@
 # agent-runtime-layers
 
-![Layers](https://img.shields.io/badge/layers-25-blue)
+![Layers](https://img.shields.io/badge/layers-26-blue)
 
 A small research agent — **Claude, LangChain, LangGraph, and Strands** — built up in
-**twenty-five deliberate layers**, each adding one agent-runtime capability. The core is a
+**twenty-six deliberate layers**, each adding one agent-runtime capability. The core is a
 ReAct agent; later layers add a LangGraph multi-agent pipeline, and the same pipeline
 rebuilt with Strands, as contrasting paradigms. It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
@@ -21,7 +21,7 @@ OpenClaw shape (`SKILL.md` + `SkillContext` + `ctx.call_tool`).
 uv run python agent.py ask "What is a Merkle tree?"
 ```
 
-## The twenty-five layers
+## The twenty-six layers
 
 The agent was built incrementally; each layer adds one capability on top of the last.
 
@@ -52,12 +52,13 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **23 — Skills as OpenClaw packages** | A skill is structurally identical to an OpenClaw skill | Each `skills/<name>/` is a package — `SKILL.md` (capability declaration the LLM reads to route), `skill.py` (`async def <name>(arg, ctx=None)`: tool calls go through `await ctx.call_tool(...)` exactly like OpenClaw's `ctx.call_claw`, or fall back to direct in-process calls when `ctx=None`), and `policy.yaml` (skill-level egress / filesystem / resources). `SkillRegistry.auto_discover()` finds them, parses each `SKILL.md`, and wraps each as a LangChain tool, so `get_tools()` carries them and the agent calls a skill by name. Two skills — `research_and_summarize` and `storage_health_check`; `agent skills` lists them. Verified: `agent ask "Research OpenShell and check if prod-us-east-1 is healthy"` auto-routes to **both**. This makes the OpenClaw bridge concrete and demonstrable. |
 | **24 — Skill-level evals** | A behavioral contract per skill | `evals/skill_evals.py` runs each skill in isolation and asserts its output contract with deterministic deepeval metrics (`SubstringMetric` all-of + a custom `SubstringAnyMetric` any-of): `research_and_summarize` must emit the three report sections; `storage_health_check` must name the cluster, cite `p99`, and emit a valid SLA rating **and** verdict — regardless of the randomized metrics. Runs inside `agent test` (a `SKILL EVALS` section). Layer 9 evaluated the agent end-to-end; this gives each *skill* its own contract test. Verified 2/2. |
 | **25 — Skill versioning & deprecation** | Skills carry a version and can be retired gracefully | Each `SKILL.md` declares `## Version` (semver) + `## Status`; a deprecated skill adds a `## Deprecation` block (replacement + sunset date). `SkillRegistry` tags deprecated skills `[DEPRECATED]`, warns on invocation, and **excludes them from the agent's tool list** (`get_tools()`) while keeping them resolvable via `get_skill()` for backward-compatible callers. `agent skills` shows version + status. Demonstrated by `storage_sla_report v0.9.0` (→ `storage_health_check`, remove after 2026-09-30), which delegates to its replacement. Skills are an API surface, so they get API lifecycle. Verified: 3 skills (2 active); the agent sees only the active ones; the deprecated one warns and still works. |
+| **26 — Skill composition (skills calling skills)** | A skill orchestrates *other skills* | `SkillContext.call_skill(name, arg)` (alongside `call_tool`) resolves a sub-skill via the registry and runs it with a **depth-incremented child context**, so skills-calling-skills is bounded by `max_depth`. New composite skill `cluster_briefing` composes `storage_health_check` + `research_and_summarize` into one briefing (the `ctx` path uses `ctx.call_skill`; the direct path calls the functions); its policy is the union of its parts'. Layers 20/23 composed *tools*; this composes *skills* — they nest like functions, with a depth guard against runaway recursion. Verified: `cluster_briefing("prod-us-east-1")` returns a Health section + a Background section — both sub-skills ran. |
 
 ## Architecture
 
 The runtime data flow: every front door — the Click **CLI**, the FastAPI **REST API**,
 and the **MCP** server — runs over one shared ReAct **core**, which orchestrates tools,
-memory, hooks, and context/RAG around the Claude LLM. The twenty-five layers stack on top
+memory, hooks, and context/RAG around the Claude LLM. The twenty-six layers stack on top
 of this spine.
 
 ![Agent runtime architecture: CLI/API/MCP → core → tools/memory/hooks/context → Claude](assets/agent_runtime_layers_architecture.svg)
@@ -378,7 +379,7 @@ reusing warm sandboxes (the warm number is ≤ host). So the latency optimizatio
 | `strands_agent/` | `agent.py` — the same pipeline via Strands (agents-as-tools, model-driven routing). |
 | `autonomy/` | `scheduler.py` — cron `AgentScheduler` + task-driven `HeartbeatLoop` (`agent schedule`/`heartbeat`/`add-task`). |
 | `dlq/` | `manager.py` — `DLQManager`: capture/classify/retry failed runs (`agent dlq-stats`/`dlq-retry`/`dlq-clear`). |
-| `skills/` | OpenClaw-pattern skills (Layer 23): each `skills/<name>/` has `SKILL.md` + `skill.py` (`async def <name>(arg, ctx=None)`) + `policy.yaml`; `context.py` (`SkillContext`) and `registry.py` (`SkillRegistry`) discover them and expose each as a tool. Each `SKILL.md` carries `## Version` + `## Status` (Layer 25); the registry warns on deprecated skills and hides them from `get_tools()`. Skills: `research_and_summarize`, `storage_health_check`, and the deprecated `storage_sla_report` (`agent skills` / `agent skill`). |
+| `skills/` | OpenClaw-pattern skills (Layer 23): each `skills/<name>/` has `SKILL.md` + `skill.py` (`async def <name>(arg, ctx=None)`) + `policy.yaml`; `context.py` (`SkillContext`) and `registry.py` (`SkillRegistry`) discover them and expose each as a tool. `SkillContext` carries `call_tool` + `call_skill` (Layer 26 composition). Each `SKILL.md` carries `## Version` + `## Status` (Layer 25); the registry warns on deprecated skills and hides them from `get_tools()`. Skills: `research_and_summarize`, `storage_health_check`, `cluster_briefing` (composes the prior two), and the deprecated `storage_sla_report` (`agent skills` / `agent skill`). |
 | `context/` | `manager.py` (tiktoken token budgeting) + `rag.py` (RAG over `docs/` via ChromaDB). |
 | `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
 | `scripts/` | OpenShell local-dev tooling (not part of the agent): `setup-openshell.sh` (gateway container w/ full mTLS on macOS + Docker Desktop), `create-sandbox.sh` (one-command sandbox + health check), `teardown-openshell.sh` (full reset), `benchmark-openshell.sh` (host-vs-sandbox latency benchmark behind the "Isolation overhead" numbers). |

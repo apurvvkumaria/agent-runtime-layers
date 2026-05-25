@@ -70,7 +70,31 @@ class SkillContext:
 
     sandbox_id: str = "local"
     policy: dict = field(default_factory=dict)
+    depth: int = 0          # composition depth (Layer 26): skills calling skills
+    max_depth: int = 5      # hard stop so composition can't recurse unbounded
 
     async def call_tool(self, name: str, **kwargs) -> str:
         """Invoke a tool by logical name through the broker (await-able)."""
         return await _dispatch(name, **kwargs)
+
+    async def call_skill(self, name: str, arg: str) -> str:
+        """Invoke another *skill* by name (Layer 26 — skill composition).
+
+        Resolves the skill through the registry and runs it with a child context
+        whose depth is incremented, so a chain of skills-calling-skills is bounded
+        by `max_depth` (a self-directing runaway guard, like the heartbeat loop's).
+        """
+        if self.depth >= self.max_depth:
+            raise RuntimeError(
+                f"skill composition depth exceeded ({self.max_depth}) calling {name!r}"
+            )
+        from skills.registry import SkillRegistry  # lazy: avoids a context<->registry cycle
+
+        fn = SkillRegistry().auto_discover().skill_function(name)
+        child = SkillContext(
+            sandbox_id=self.sandbox_id,
+            policy=self.policy,
+            depth=self.depth + 1,
+            max_depth=self.max_depth,
+        )
+        return await fn(arg, ctx=child)
