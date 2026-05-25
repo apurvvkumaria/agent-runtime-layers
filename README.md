@@ -46,6 +46,21 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **20 — Skills (composed tools)** | One tool that orchestrates several | `research_and_summarize` is a `@tool` that internally runs web search → storage metrics → LLM summarization and returns a structured report (Research Findings / Storage Context / Summary). It's in `get_tools()`, so the agent picks it for "research and summarize" requests; `agent skill "..."` runs it directly. A skill packages a multi-tool workflow behind one tool interface (same pattern as OpenClaw skills). |
 | **21 — Run inside an OpenShell sandbox** ✅ *verified* | The agent executes under a declarative sandbox policy | `agent sandbox-ask "…"` runs the whole agent inside an NVIDIA OpenShell sandbox via one `openshell sandbox create --upload … --no-keep -- … agent.py ask`, then auto-deletes it; `agent sandbox-info` shows gateway/sandboxes/policy. The policy (`openshell/policy.yaml`, real v0.0.47 schema) is **binary-keyed, default-deny** egress — the sandbox's python may reach only `api.anthropic.com` + DuckDuckGo. `openshell/agent-sandbox/` bakes the deps; setup in `openshell/setup.md` + `scripts/`. Verified end-to-end: answers `2 + 2 = 4` from inside the sandbox. The agent as an isolated, policy-constrained workload instead of a host process. |
 
+## Architecture
+
+The runtime data flow: every front door — the Click **CLI**, the FastAPI **REST API**,
+and the **MCP** server — runs over one shared ReAct **core**, which orchestrates tools,
+memory, hooks, and context/RAG around the Claude LLM. The twenty-one layers stack on top
+of this spine.
+
+![Agent runtime architecture: CLI/API/MCP → core → tools/memory/hooks/context → Claude](assets/agent_runtime_layers_architecture.svg)
+
+Two layers with non-trivial control flow have their own diagrams:
+
+| Multi-agent pipeline (Layers 13 & 17) | Dead-letter queue (Layer 19) |
+|---|---|
+| ![LangGraph StateGraph with a quality-gated retry loop](assets/langgraph_pipeline_retry_loop.svg) | ![DLQ transient/permanent classification and backoff retry](assets/dlq_classification_and_retry_flow.svg) |
+
 ## How it works
 
 ```
