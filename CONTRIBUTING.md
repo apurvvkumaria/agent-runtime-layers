@@ -15,8 +15,8 @@ readable, and well-explained are very welcome.
 ## Setup
 
 ```bash
-git clone https://github.com/apurvvkumaria/langchain-agent-layers.git
-cd langchain-agent-layers
+git clone https://github.com/apurvvkumaria/agent-runtime-layers.git
+cd agent-runtime-layers
 
 uv sync                 # create the venv and install dependencies
 cp .env.example .env    # then edit .env and add your keys
