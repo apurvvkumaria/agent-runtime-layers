@@ -202,6 +202,7 @@ version. Editing a prompt is a behavior change — re-run `agent test` after.
 | `skills/` | `research_and_summarize.py` — a `@tool` that composes search + metrics + summarization (`agent skill`). |
 | `context/` | `manager.py` (tiktoken token budgeting) + `rag.py` (RAG over `docs/` via ChromaDB). |
 | `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
+| `scripts/` | OpenShell local-dev tooling (not part of the agent): `setup-openshell.sh` (gateway container w/ full mTLS on macOS + Docker Desktop), `create-sandbox.sh` (one-command sandbox + health check), `teardown-openshell.sh` (full reset). |
 | `tests/` | pytest suite — tool units + API integration (LLM stubbed). |
 | `evals/` | Real-agent behavioral evals: deterministic cases + LLM-as-judge scoring. |
 | `.env` | Local secrets (`LANGFUSE_*`). Git-ignored. |
