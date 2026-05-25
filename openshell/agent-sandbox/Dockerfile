@@ -42,5 +42,13 @@ WORKDIR /sandbox/agent-build
 RUN uv sync --frozen --no-install-project \
     && uv cache clean
 
+# Pre-cache the tiktoken encoding the context manager uses (cl100k_base).
+# tiktoken fetches it from openaipublic.blob.core.windows.net on first use, and
+# the run-time egress policy denies that host — so cache it now (build has
+# network) and point TIKTOKEN_CACHE_DIR at it. Separate layer so the heavy
+# uv-sync layer above stays cached when only this changes.
+ENV TIKTOKEN_CACHE_DIR=/sandbox/.tiktoken
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
+
 WORKDIR /sandbox
 ENTRYPOINT ["/bin/bash"]

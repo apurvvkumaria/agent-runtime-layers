@@ -57,18 +57,27 @@ network_policies:
   agent:
     name: agent
     endpoints:
-      # Reasoning: Claude. (`access: full` like the community claude_code policy.)
-      - { host: api.anthropic.com, port: 443, protocol: rest, enforcement: enforce, access: full, tls: terminate }
+      # Reasoning: Claude. `tls: skip` = allow the connection WITHOUT terminating
+      # TLS. The gateway's automatic TLS termination (the new default; the old
+      # `tls: terminate` is deprecated) MITMs the connection with its own cert,
+      # which the Anthropic Python SDK (httpx + certifi) won't trust → the call
+      # fails cert verification. `skip` passes through to the real Anthropic cert.
+      - { host: api.anthropic.com, port: 443, enforcement: enforce, tls: skip }
       # Web-search tool (DuckDuckGoSearchRun via ddgs). OPA host matching is exact
       # equality (no glob), so the ddg hosts the client actually hits are listed.
-      - { host: duckduckgo.com, port: 443 }
-      - { host: html.duckduckgo.com, port: 443 }
-      - { host: lite.duckduckgo.com, port: 443 }
-      - { host: links.duckduckgo.com, port: 443 }
+      # `tls: skip` for the same cert-trust reason as above.
+      - { host: duckduckgo.com, port: 443, tls: skip }
+      - { host: html.duckduckgo.com, port: 443, tls: skip }
+      - { host: lite.duckduckgo.com, port: 443, tls: skip }
+      - { host: links.duckduckgo.com, port: 443, tls: skip }
     binaries:
-      # The agent runs as `python agent.py ask`. The interpreter path is
-      # image-dependent; list the common venv/system locations (a uv-built image
-      # puts it under /sandbox/.venv, mirroring the community `pypi` policy).
+      # The agent runs as `python agent.py ask`. Binary identity is matched on
+      # the FULLY-RESOLVED exe path (/proc/pid/exe). /sandbox/.venv/bin/python is
+      # a symlink chain ending at uv's patch-versioned interpreter
+      # (/sandbox/.uv/python/cpython-3.13.12-.../bin/python3.13), so the glob
+      # below — the same one the community `pypi` policy uses — is what actually
+      # matches; the explicit venv paths are kept for non-uv images.
+      - { path: "/sandbox/.uv/python/**" }
       - { path: /sandbox/.venv/bin/python }
       - { path: /sandbox/.venv/bin/python3 }
       - { path: /app/.venv/bin/python }

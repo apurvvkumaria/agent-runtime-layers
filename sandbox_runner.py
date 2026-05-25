@@ -1,41 +1,49 @@
 """Run the agent inside an OpenShell sandbox (Layer 21).
 
-Orchestrates the `openshell` CLI + Docker to execute `agent.py ask` inside a
-policy-constrained sandbox container instead of on the host. This is sandboxed
-agent execution: the agent's reasoning and tool calls run under the network /
-filesystem / resource limits declared in `openshell/policy.yaml`, enforced by
+Drives the `openshell` CLI to execute `agent.py ask` inside a policy-constrained
+sandbox instead of on the host. The agent's reasoning + tool calls run under the
+network / filesystem / resource limits in `openshell/policy.yaml`, enforced by
 the sandbox supervisor (Landlock + the gateway's egress rules).
 
-We drive the `openshell` CLI *binary* via subprocess — nothing here does
-`import openshell`. That's deliberate: the sibling `openshell/` directory
-(policy + docs, no `__init__.py`) would otherwise shadow the real `openshell`
-PyPI SDK as a namespace package, the same trap that put the MCP code in
-`mcp_integration/`. Driving the CLI sidesteps it entirely.
+The whole round trip is ONE `openshell sandbox create` call — the CLI is built
+for it: `--upload` stages files in, `-- <cmd>` runs the agent, `--no-keep`
+deletes the sandbox after the command exits. We stage the source + a generated
+`.env` (the API key + offline flags) into a temp `workspace/` dir and upload
+that, because `--upload` can only be given once and the repo's own `.env` is
+git-ignored (so it's filtered out of a plain source upload — good for secrets,
+but then the key has to be injected deliberately).
 
-Prerequisites (see openshell/setup.md):
-  - a running gateway (scripts/setup-openshell.sh)
-  - a sandbox image with the project's Python deps PRE-INSTALLED — the policy
-    denies PyPI egress, so deps can't be installed at run time.
+We use the `openshell` CLI *binary* (subprocess), never `import openshell` — so
+the sibling `openshell/` directory (policy + docs, no `__init__.py`) can't shadow
+the real `openshell` SDK as a namespace package (the trap that put MCP code in
+`mcp_integration/`).
+
+Prerequisites (see openshell/setup.md): a running gateway, and a sandbox image
+with the project's Python deps PRE-INSTALLED (openshell/agent-sandbox/) — the
+policy denies PyPI egress, so deps can't be installed at run time.
 """
 
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
-import time
 import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 POLICY_PATH = ROOT / "openshell" / "policy.yaml"
 WORKSPACE = "/sandbox/workspace"  # matches the writable path in policy.yaml
-SUCCESS_MARKER = "OpenShell Sandbox Supervisor success"
+# Where the agent-sandbox image bakes the tiktoken encoding. `openshell exec`
+# runs with a sanitized env that drops the image's Dockerfile ENV, so we must
+# re-export this in the run command or tiktoken tries to download (denied).
+TIKTOKEN_CACHE_DIR = "/sandbox/.tiktoken"
 
 # Project files/dirs the agent needs to answer a question. Missing ones are
-# skipped, so this stays correct as the tree evolves. (We avoid uploading
-# .venv/.git/chroma_db — the sandbox image supplies the installed deps.)
+# skipped, so this stays correct as the tree evolves. (.venv/.git/chroma_db are
+# never staged — the image supplies the installed deps.)
 _UPLOAD = [
     "agent.py", "core.py", "tools.py", "hooks.py", "api.py",
     "prompts", "skills", "mcp_integration", "memory", "context",
@@ -45,7 +53,7 @@ _UPLOAD = [
 
 
 class SandboxError(RuntimeError):
-    """The sandbox workflow can't proceed (missing CLI/Docker, gateway down, etc.)."""
+    """The sandbox workflow can't proceed (missing CLI, gateway down, run failed)."""
 
 
 def _require(binary: str) -> None:
@@ -56,15 +64,6 @@ def _require(binary: str) -> None:
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
     """Run a command, capturing stdout/stderr as text (never raises on nonzero)."""
     return subprocess.run(cmd, text=True, capture_output=True)
-
-
-def _logs(container: str, tail: int | None = None) -> str:
-    """`docker logs` with stderr folded into stdout (the supervisor logs to both)."""
-    cmd = ["docker", "logs"]
-    if tail is not None:
-        cmd += ["--tail", str(tail)]
-    cmd.append(container)
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
 
 
 # --- Read-only queries (sandbox-info) ------------------------------------
@@ -99,124 +98,83 @@ def _sandbox_python() -> str:
     return os.environ.get("OPENSHELL_SANDBOX_PYTHON", "python")
 
 
-def _create_sandbox(name: str, image: str) -> None:
-    """Create a sandbox with the given name from `image`, applying the policy.
+def _build_staging() -> Path:
+    """Stage source + a generated .env into a temp `workspace/` dir, return its path.
 
-    We pass `--name` ourselves so the name is deterministic (no parsing the
-    "Created sandbox:" line). The sandbox is left running so we can upload the
-    source and exec into it; run_in_sandbox deletes it afterward.
+    Uploading `<dir>:/sandbox` lands `<dir>`'s contents at `/sandbox/<dir-name>`,
+    so the dir is named `workspace` to produce `/sandbox/workspace/...`.
     """
-    # Resources are create-time flags, not policy fields (the policy schema has
-    # no resources block) — these encode the intended 2 cores / 1 GiB limit.
-    cmd = ["openshell", "sandbox", "create", "--from", image, "--name", name,
-           "--cpu", "2", "--memory", "1Gi"]
-    if POLICY_PATH.exists():
-        cmd += ["--policy", str(POLICY_PATH)]
-    p = _run(cmd)
-    if p.returncode != 0:
-        raise SandboxError(f"`sandbox create` failed: {p.stderr.strip() or p.stdout.strip()}")
-
-
-def _container_for(name: str) -> str | None:
-    """The data-plane container is openshell-<name>-<uuid>; match by prefix."""
-    p = _run(["docker", "ps", "--filter", f"name=openshell-{name}-", "--format", "{{.Names}}"])
-    lines = [ln for ln in p.stdout.splitlines() if ln.strip()]
-    return lines[0] if lines else None
-
-
-def _wait_healthy(container: str, tries: int = 15) -> bool:
-    """Poll the supervisor logs — "Created" != healthy (it can crashloop on cert/JWT)."""
-    for _ in range(tries):
-        if SUCCESS_MARKER in _logs(container):
-            return True
-        time.sleep(1)
-    return False
-
-
-def _provision_env(container: str) -> None:
-    """Drop a .env with the Anthropic key into the workspace; load_dotenv() reads it."""
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         raise SandboxError("ANTHROPIC_API_KEY is not set on the host; the sandboxed agent needs it.")
-    with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
-        f.write(f"ANTHROPIC_API_KEY={key}\n")
-        tmp = f.name
-    try:
-        p = _run(["docker", "cp", tmp, f"{container}:{WORKSPACE}/.env"])
-        if p.returncode != 0:
-            raise SandboxError(f"failed to provision .env: {p.stderr.strip()}")
-    finally:
-        os.unlink(tmp)
 
-
-def _upload_source(container: str) -> None:
-    """Copy the project source into the sandbox's workspace via the Docker control plane.
-
-    Note: `docker cp`/`docker exec` from the host are NOT subject to the sandbox
-    policy — Landlock constrains the sandbox's own process tree (the agent run),
-    not host-initiated operations on the container. So we provision inputs
-    out-of-band here; the thing the policy actually governs is the agent process
-    we later start through `openshell sandbox exec` (gRPC → supervisor).
-    """
-    _run(["docker", "exec", container, "mkdir", "-p", WORKSPACE])  # best effort
+    tmp = Path(tempfile.mkdtemp(prefix="osb-"))
+    stage = tmp / "workspace"
+    stage.mkdir()
     for rel in _UPLOAD:
         src = ROOT / rel
         if not src.exists():
             continue
-        p = _run(["docker", "cp", str(src), f"{container}:{WORKSPACE}/"])
-        if p.returncode != 0:
-            raise SandboxError(f"upload of {rel} failed: {p.stderr.strip()}")
+        dst = stage / rel
+        if src.is_dir():
+            shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.json"))
+        else:
+            shutil.copy2(src, dst)
 
-
-def _exec_ask(name: str, question: str) -> str:
-    """Run `agent.py ask` inside the sandbox via the CLI, so the policy is enforced.
-
-    `exec` auto-disables the PTY when stdout isn't a terminal (we capture it),
-    which keeps the streamed answer from being garbled by ANSI control codes.
-    """
-    cmd = [
-        "openshell", "sandbox", "exec", "-n", name, "--workdir", WORKSPACE,
-        "--", _sandbox_python(), "agent.py", "ask", question,
-    ]
-    p = _run(cmd)
-    if p.returncode != 0:
-        raise SandboxError(f"sandboxed run failed:\n{p.stderr.strip() or p.stdout.strip()}")
-    return p.stdout.strip()
+    # The key + flags that keep a touched chromadb/transformers import from
+    # stalling on egress the policy denies (PostHog telemetry / HuggingFace).
+    (stage / ".env").write_text(
+        f"ANTHROPIC_API_KEY={key}\n"
+        "ANONYMIZED_TELEMETRY=False\n"
+        "HF_HUB_OFFLINE=1\n"
+        "TRANSFORMERS_OFFLINE=1\n",
+        encoding="utf-8",
+    )
+    return stage
 
 
 def run_in_sandbox(question: str, keep: bool = False, image: str | None = None) -> str:
     """Create a sandbox, run `ask` inside it under the policy, and return the answer.
 
-    Deletes the sandbox afterward unless `keep` is True. Raises SandboxError if
-    any stage fails (missing tooling, gateway down, unhealthy supervisor, etc.).
+    One `openshell sandbox create` call does it all: upload the staged source,
+    run the agent, and (unless `keep`) delete the sandbox when the command exits.
+    Raises SandboxError if the gateway is down or the run fails.
     """
     _require("openshell")
-    _require("docker")
     gateway_status()  # fail fast if the gateway isn't up
 
     image = _sandbox_image(image)
     name = f"agent-ask-{uuid.uuid4().hex[:8]}"
     print("🔒 Running inside OpenShell sandbox...")
-    print(f"   image={image}  policy={'openshell/policy.yaml' if POLICY_PATH.exists() else '(none)'}")
+    print(f"   image={image}  policy={'openshell/policy.yaml' if POLICY_PATH.exists() else '(none)'}  sandbox={name}")
+    print("   creating sandbox, uploading source, running `agent.py ask` (policy-constrained)...\n")
 
-    _create_sandbox(name, image)
-    print(f"   sandbox={name}")
+    stage = _build_staging()
+    # `cd` into the workspace so the agent's relative paths + load_dotenv(.env)
+    # work, and export TIKTOKEN_CACHE_DIR (the image ENV doesn't survive exec).
+    inner = (
+        f"cd {WORKSPACE} && export TIKTOKEN_CACHE_DIR={TIKTOKEN_CACHE_DIR} && "
+        f"exec {_sandbox_python()} agent.py ask {shlex.quote(question)}"
+    )
+    cmd = [
+        "openshell", "sandbox", "create",
+        "--from", image, "--name", name,
+        "--cpu", "2", "--memory", "1Gi",
+        "--policy", str(POLICY_PATH),
+        "--upload", f"{stage}:/sandbox",   # -> /sandbox/workspace/...
+        "--no-tty",
+    ]
+    if not keep:
+        cmd.append("--no-keep")
+    cmd += ["--", "sh", "-lc", inner]
+
     try:
-        container = _container_for(name)
-        if not container:
-            raise SandboxError(f"no running container found for sandbox '{name}'.")
-        if not _wait_healthy(container):
-            raise SandboxError(
-                f"sandbox '{name}' never reported the supervisor success marker:\n"
-                f"{_logs(container, tail=30)}"
-            )
-        _provision_env(container)
-        _upload_source(container)
-        print("   executing: agent.py ask (policy-constrained)\n")
-        return _exec_ask(name, question)
+        p = _run(cmd)
     finally:
-        if keep:
-            print(f"\n   kept sandbox '{name}' (delete with: openshell sandbox delete {name})")
-        else:
-            _run(["openshell", "sandbox", "delete", name])
-            print(f"\n   deleted sandbox '{name}'")
+        shutil.rmtree(stage.parent, ignore_errors=True)
+
+    if p.returncode != 0:
+        raise SandboxError(f"sandboxed run failed:\n{(p.stderr or p.stdout).strip()}")
+    if keep:
+        print(f"   kept sandbox '{name}' (delete with: openshell sandbox delete {name})\n")
+    return p.stdout.strip()
