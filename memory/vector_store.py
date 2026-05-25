@@ -21,7 +21,7 @@ from pathlib import Path
 import chromadb
 from chromadb.config import Settings
 from langchain_classic.base_memory import BaseMemory
-from pydantic import ConfigDict, PrivateAttr
+from pydantic import ConfigDict, Field, PrivateAttr
 from sentence_transformers import SentenceTransformer
 
 DEFAULT_STORE_DIR = "./chroma_db"
@@ -34,12 +34,13 @@ TIERS = ("full", "summary", "marker", "archived")
 _AGE_DAYS = {"summary": 3, "marker": 30, "archived": 90}  # lower bound (days) per tier
 
 
-def _tier_for_age(age_days: float) -> str:
-    if age_days < _AGE_DAYS["summary"]:
+def _tier_for_age(age_days: float, thresholds: dict | None = None) -> str:
+    t = thresholds or _AGE_DAYS
+    if age_days < t["summary"]:
         return "full"
-    if age_days < _AGE_DAYS["marker"]:
+    if age_days < t["marker"]:
         return "summary"
-    if age_days < _AGE_DAYS["archived"]:
+    if age_days < t["archived"]:
         return "marker"
     return "archived"
 
@@ -76,6 +77,10 @@ class VectorStoreMemory(BaseMemory):
     k: int = 3
     store_dir: str = DEFAULT_STORE_DIR
     collection_name: str = "conversation_turns"
+    # Age thresholds (days) at which a turn enters each tier. Override fully or
+    # partially, e.g. VectorStoreMemory(decay_days={"archived": 365}); missing
+    # keys fall back to the defaults.
+    decay_days: dict[str, int] = Field(default_factory=lambda: dict(_AGE_DAYS))
 
     # Heavy/runtime objects kept off the pydantic schema.
     _embedder: object = PrivateAttr(default=None)
@@ -84,6 +89,7 @@ class VectorStoreMemory(BaseMemory):
 
     def __init__(self, embedder: object | None = None, **data) -> None:
         super().__init__(**data)
+        self.decay_days = {**_AGE_DAYS, **(self.decay_days or {})}  # fill missing keys
         self._embedder = embedder if embedder is not None else SentenceTransformerEmbedder()
         self._client = chromadb.PersistentClient(
             path=self.store_dir,
@@ -199,7 +205,7 @@ class VectorStoreMemory(BaseMemory):
         counts = {tier: 0 for tier in TIERS}
         to_delete: list[str] = []
         for cid, meta in zip(stored["ids"], stored["metadatas"]):
-            target = _tier_for_age((now - meta.get("ts", now)) / 86400)
+            target = _tier_for_age((now - meta.get("ts", now)) / 86400, self.decay_days)
             counts[target] += 1
             if target == "archived":
                 to_delete.append(cid)

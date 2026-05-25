@@ -380,11 +380,21 @@ def memory_clear(yes: bool) -> None:
 
 
 @cli.command(name="memory-decay")
-def memory_decay() -> None:
+@click.option("--summary-days", type=int, default=None, help="Age (days) a turn becomes a summary.")
+@click.option("--marker-days", type=int, default=None, help="Age (days) a turn becomes a topic marker.")
+@click.option("--archived-days", type=int, default=None, help="Age (days) a turn is archived (deleted).")
+def memory_decay(summary_days: int | None, marker_days: int | None, archived_days: int | None) -> None:
     """Age out stored turns by tier (full -> summary -> marker -> archived)."""
     from memory.vector_store import VectorStoreMemory
 
-    counts = VectorStoreMemory().decay_memory()
+    overrides = {
+        k: v for k, v in (
+            ("summary", summary_days), ("marker", marker_days), ("archived", archived_days)
+        ) if v is not None
+    }
+    mem = VectorStoreMemory(decay_days=overrides) if overrides else VectorStoreMemory()
+    counts = mem.decay_memory()
+    click.echo(f"Thresholds (days): {mem.decay_days}")
     click.echo(
         f"{counts['full']} full, {counts['summary']} summary, "
         f"{counts['marker']} marker, {counts['archived']} archived"
