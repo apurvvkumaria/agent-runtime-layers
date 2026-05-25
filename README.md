@@ -12,7 +12,8 @@ tests + evals, MCP (Model Context Protocol) in both directions, file/LangFuse-ba
 prompt management, vector-store memory, a LangGraph multi-agent pipeline, token-budget
 context management with RAG, a LangGraph-vs-Strands comparison, age-based memory decay,
 a streaming multi-agent graph, autonomous (cron + heartbeat) operation, a dead-letter
-queue for failed runs, and a composed skill.
+queue for failed runs, a composed skill, and — the final layer — running the whole agent
+inside an **NVIDIA OpenShell** sandbox under a declarative network/filesystem policy.
 
 ```bash
 uv run python agent.py ask "What is a Merkle tree?"
@@ -199,6 +200,61 @@ LangFuse: `build_single_shot_agent` fetches `react-agent-prompt` from LangFuse f
 falls back to the local file, and `agent sync-prompt` pushes the local copy up as a new
 version. Editing a prompt is a behavior change — re-run `agent test` after.
 
+## Running inside an OpenShell sandbox (Layer 21)
+
+[OpenShell](https://github.com/NVIDIA/OpenShell) is NVIDIA's open-source runtime for
+executing autonomous AI agents inside isolated, policy-constrained sandboxes. Layer 21 runs
+*this* agent inside one: instead of `agent ask` executing on the host with the host's
+privileges, the entire reasoning + tool-calling loop runs as a sandboxed workload whose
+network egress, filesystem, and resources are governed by a declarative policy.
+
+**How it's wired.** A **gateway** runs as a Docker container (control plane); the `openshell`
+CLI talks to it over **mTLS**, the gateway talks to per-run **sandbox** containers over gRPC
+with gateway-minted JWTs, and a Rust **supervisor** inside each sandbox enforces the policy
+(Landlock for the filesystem, an egress proxy for the network). `scripts/setup-openshell.sh`
+brings the gateway up on **macOS + Docker Desktop** with full mTLS (the only configuration
+where sandboxes actually run — `openshell/setup.md` explains why the plaintext Quick Start
+dead-ends); `scripts/teardown-openshell.sh` resets it.
+
+**Our usage.**
+
+```sh
+uv run python agent.py sandbox-info                  # gateway status + running sandboxes + active policy
+uv run python agent.py sandbox-ask "What is 2 + 2?"  # run `ask` inside a sandbox, then auto-delete it
+```
+
+`sandbox-ask` does the whole round trip in **one** `openshell sandbox create` call: it stages
+the agent source + a generated `.env` into a `workspace/` dir, `--upload`s it, runs
+`agent.py ask` under the policy, and `--no-keep`s to delete the sandbox when the command exits
+(`--keep` to retain). `sandbox_runner.py` drives the CLI as a subprocess; `openshell/` holds
+the policy + setup docs; `openshell/agent-sandbox/` is the deps-baked image (`FROM` the
+community `base` sandbox + the project's locked deps + a pre-cached tiktoken encoding, since
+the egress policy denies PyPI at run time).
+
+**The policy.** `openshell/policy.yaml` (real OpenShell v0.0.47 schema) is **default-deny**,
+and egress is **keyed to the binary** making the connection: the sandbox's python may reach
+only `api.anthropic.com` (reasoning) and DuckDuckGo (the search tool) — everything else is
+denied. The filesystem is narrowed to `/sandbox` + `/tmp`; CPU/memory are capped via create
+flags. The split that matters for a system-design discussion: **file delivery is host-side
+control plane** (not policy-governed), while the **agent process** runs under the supervisor's
+Landlock + egress enforcement — the policy governs the workload, not the plumbing.
+
+> **Verified end-to-end:** `sandbox-ask "What is 2 + 2?"` runs the agent inside the sandbox
+> and returns `2 + 2 = 4`, with the only allowed egress being the Anthropic API.
+
+**Gotchas worth knowing** (each confirmed against the gateway's own logs — building blind would
+have shipped plausible-but-wrong assumptions):
+
+- A bare `sandbox create` **hangs** on an interactive shell; the one-shot pattern is
+  `create … --no-keep -- <cmd>`.
+- Egress is matched on the **fully-resolved exe path** (`/proc/{pid}/exe`), so the policy
+  allowlists `/sandbox/.uv/python/**`, not the venv symlink.
+- **`tls: skip`, not `terminate`** — automatic TLS termination MITMs the connection with the
+  gateway's cert, which the Anthropic Python SDK (httpx + certifi) won't trust; `skip` tunnels
+  to the real Anthropic cert.
+- **`exec` runs with a sanitized env** that drops the image's Dockerfile `ENV`, so anything the
+  agent needs (e.g. `TIKTOKEN_CACHE_DIR`) is exported in the run command.
+
 ## Project structure
 
 | File | What it does |
@@ -219,6 +275,9 @@ version. Editing a prompt is a behavior change — re-run `agent test` after.
 | `context/` | `manager.py` (tiktoken token budgeting) + `rag.py` (RAG over `docs/` via ChromaDB). |
 | `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
 | `scripts/` | OpenShell local-dev tooling (not part of the agent): `setup-openshell.sh` (gateway container w/ full mTLS on macOS + Docker Desktop), `create-sandbox.sh` (one-command sandbox + health check), `teardown-openshell.sh` (full reset). |
+| `sandbox_runner.py` | Layer 21 — drives the `openshell` CLI to run `agent.py ask` inside a policy-constrained sandbox (`agent sandbox-ask`/`sandbox-info`). |
+| `openshell/` | Layer 21 config + docs (not a Python package, so it can't shadow the `openshell` SDK): `policy.yaml` (sandbox network/fs policy), `setup.md` (macOS gateway setup), `agent-sandbox/` (deps-baked sandbox image). |
+| `assets/` | Architecture diagrams (SVG) embedded in this README. |
 | `tests/` | pytest suite — tool units + API integration (LLM stubbed). |
 | `evals/` | Real-agent behavioral evals: deterministic cases + LLM-as-judge scoring. |
 | `.env` | Local secrets (`LANGFUSE_*`). Git-ignored. |
