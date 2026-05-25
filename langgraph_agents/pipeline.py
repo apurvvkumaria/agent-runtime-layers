@@ -197,9 +197,8 @@ def build_pipeline():
     return g.compile()
 
 
-def run_pipeline(question: str, on_node=None) -> dict:
-    """Stream the pipeline, calling on_node(name) per executed node; return final state."""
-    initial: ResearchState = {
+def _initial_state(question: str) -> "ResearchState":
+    return {
         "question": question,
         "search_results": "",
         "calculation": "",
@@ -210,11 +209,51 @@ def run_pipeline(question: str, on_node=None) -> dict:
         "route": "",
         "token_count": 0,
     }
-    final = dict(initial)
-    for chunk in build_pipeline().stream(initial, stream_mode="updates"):
+
+
+def _chunk_text(chunk) -> str:
+    """Text from a streamed message chunk (str content or content blocks)."""
+    content = getattr(chunk, "content", "")
+    if isinstance(content, str):
+        return content
+    return "".join(b.get("text", "") for b in content if isinstance(b, dict))
+
+
+def run_pipeline(question: str, on_node=None) -> dict:
+    """Run the pipeline, calling on_node(name) per executed node; return final state."""
+    final = dict(_initial_state(question))
+    for chunk in build_pipeline().stream(_initial_state(question), stream_mode="updates"):
         for node_name, update in chunk.items():
             if on_node:
                 on_node(node_name)
             if isinstance(update, dict):
                 final.update(update)
+    return final
+
+
+async def stream_pipeline(question: str, on_node=None, on_token=None) -> dict:
+    """Run the pipeline, streaming node updates AND the writer's answer tokens.
+
+    Uses LangGraph multi-mode streaming: "updates" fires on_node(name) as each node
+    completes (and accumulates the final state), while "messages" streams the
+    writer node's LLM tokens to on_token(text) as they're generated. Returns the
+    final state.
+    """
+    final = dict(_initial_state(question))
+    stream = build_pipeline().astream(
+        _initial_state(question), stream_mode=["updates", "messages"]
+    )
+    async for mode, chunk in stream:
+        if mode == "updates":
+            for node_name, update in chunk.items():
+                if on_node:
+                    on_node(node_name)
+                if isinstance(update, dict):
+                    final.update(update)
+        elif mode == "messages":
+            message, metadata = chunk
+            if metadata.get("langgraph_node") == "writer" and on_token:
+                text = _chunk_text(message)
+                if text:
+                    on_token(text)
     return final

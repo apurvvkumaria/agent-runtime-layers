@@ -256,12 +256,29 @@ def memory_stats() -> None:
 
 
 def _run_langgraph(question: str) -> None:
-    from langgraph_agents.pipeline import run_pipeline
+    import asyncio
 
-    click.echo("=== LangGraph (fixed graph) ===")
-    result = run_pipeline(question, on_node=lambda name: click.echo(f"[{name}]"))
-    click.echo(f"\nQuality score: {result['quality_score']} | tokens: {result.get('token_count', 0)}")
-    click.echo(f"\nFinal answer:\n{result['final_answer']}")
+    from langgraph_agents.pipeline import stream_pipeline
+
+    click.echo("=== LangGraph (fixed graph, streaming) ===")
+    state = {"answering": False}
+
+    def on_node(name: str) -> None:
+        if name == "writer":  # the writer's output is streamed below, not labelled
+            return
+        # separate a node label from any answer text streamed just before it
+        click.echo(f"{chr(10) if state['answering'] else ''}[{name}]")
+
+    def on_token(text: str) -> None:
+        if not state["answering"]:
+            click.echo("\nAnswer (streaming):\n", nl=False)
+            state["answering"] = True
+        click.echo(text, nl=False)
+
+    result = asyncio.run(stream_pipeline(question, on_node=on_node, on_token=on_token))
+    if not state["answering"]:  # nothing streamed — fall back to the final text
+        click.echo(f"\nFinal answer:\n{result['final_answer']}")
+    click.echo(f"\n\nQuality score: {result['quality_score']} | tokens: {result.get('token_count', 0)}")
 
 
 def _run_strands(question: str) -> None:
