@@ -1,9 +1,9 @@
 # agent-runtime-layers
 
-![Layers](https://img.shields.io/badge/layers-18-blue)
+![Layers](https://img.shields.io/badge/layers-19-blue)
 
 A small research agent — **Claude, LangChain, LangGraph, and Strands** — built up in
-**eighteen deliberate layers**, each adding one agent-runtime capability. The core is a
+**nineteen deliberate layers**, each adding one agent-runtime capability. The core is a
 ReAct agent; later layers add a LangGraph multi-agent pipeline, and the same pipeline
 rebuilt with Strands, as contrasting paradigms. It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
@@ -11,13 +11,14 @@ calling, memory, streaming, lifecycle hooks, production tracing, a CLI, a REST A
 tests + evals, MCP (Model Context Protocol) in both directions, file/LangFuse-based
 prompt management, vector-store memory, a LangGraph multi-agent pipeline, token-budget
 context management with RAG, a LangGraph-vs-Strands comparison, age-based memory decay,
-a streaming multi-agent graph, and autonomous (cron + heartbeat) operation.
+a streaming multi-agent graph, autonomous (cron + heartbeat) operation, and a dead-letter
+queue for failed runs.
 
 ```bash
 uv run python agent.py ask "What is a Merkle tree?"
 ```
 
-## The eighteen layers
+## The nineteen layers
 
 The agent was built incrementally; each layer adds one capability on top of the last.
 
@@ -41,6 +42,7 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **16 — Memory decay** | Old context compresses, then expires | Each stored turn carries a tier that downgrades with age: `full` (<3d, verbatim) → `summary` (3-30d, one-sentence LLM summary) → `marker` (30-90d, topic tag) → `archived` (>90d, deleted). `agent memory-decay` ages turns out; `memory-stats` shows the breakdown. Keeps the retrievable store bounded without a hard cutoff — recent stays sharp, old blurs to a gist, then drops. |
 | **17 — Streaming the pipeline** | Live node progress + token-by-token answer | `agent pipeline` (LangGraph) streams via multi-mode `astream(["updates","messages"])`: node names print as they complete, and the writer node's answer streams token-by-token (filtered by `langgraph_node`). Layer 4 streamed the single ReAct loop; this streams a multi-agent graph. |
 | **18 — Autonomous modes** | Run without a human in the loop | `AgentScheduler` runs a question on a cron schedule (APScheduler), appending timestamped answers to a file; `HeartbeatLoop` polls `tasks.json`, runs pending tasks, and queues agent-suggested follow-ups (self-directing, bounded). CLI: `agent schedule`/`heartbeat`/`add-task`. Both are long-running blocking processes. |
+| **19 — Dead-letter queue** | Failed runs are captured, not lost | `core` records each failed run to a DLQ with a reason, classified transient (retry) vs. permanent (review). `agent dlq-retry` replays transient failures with exponential backoff (promoting exhausted ones to permanent); `dlq-stats`/`dlq-clear` report and review. Failures are also flagged 0 in LangFuse. Same idea as a message-queue DLQ, for agent runs. |
 
 ## How it works
 
@@ -122,6 +124,7 @@ uv run python agent.py compare "..."       # run LangGraph vs Strands side by si
 uv run python agent.py add-task "..."      # queue a task for the heartbeat loop
 uv run python agent.py heartbeat           # process tasks.json on a loop (blocks)
 uv run python agent.py schedule "..." --cron "0 9 * * *" --output report.md  # cron (blocks)
+uv run python agent.py dlq-stats           # failed-run counts; dlq-retry / dlq-clear too
 uv run python agent.py context-stats "..." # token budget + RAG docs for a question
 uv run python agent.py test                # run tests + evals, print a summary
 ```
@@ -192,6 +195,7 @@ version. Editing a prompt is a behavior change — re-run `agent test` after.
 | `langgraph_agents/` | `pipeline.py` — a LangGraph `StateGraph` of five agent nodes with a quality-gated retry loop (`agent pipeline`). |
 | `strands_agent/` | `agent.py` — the same pipeline via Strands (agents-as-tools, model-driven routing). |
 | `autonomy/` | `scheduler.py` — cron `AgentScheduler` + task-driven `HeartbeatLoop` (`agent schedule`/`heartbeat`/`add-task`). |
+| `dlq/` | `manager.py` — `DLQManager`: capture/classify/retry failed runs (`agent dlq-stats`/`dlq-retry`/`dlq-clear`). |
 | `context/` | `manager.py` (tiktoken token budgeting) + `rag.py` (RAG over `docs/` via ChromaDB). |
 | `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
 | `tests/` | pytest suite — tool units + API integration (LLM stubbed). |

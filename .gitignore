@@ -29,4 +29,5 @@ chroma_db/
 
 # Autonomous-mode runtime state
 tasks.json
-dlq.json
+# DLQ runtime state (keep the package code, ignore the JSON stores)
+dlq/*.json

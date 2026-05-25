@@ -231,31 +231,44 @@ async def stream_answer(
             "langfuse_tags": ["agent-practice", "react-agent"],
         },
     }
-    async for event in executor.astream_events({"input": agent_input}, version="v2", config=config):
-        if event["event"] != "on_chat_model_stream":
-            continue
-        token = _chunk_text(event["data"]["chunk"])
-        if not token:
-            continue
+    try:
+        async for event in executor.astream_events({"input": agent_input}, version="v2", config=config):
+            if event["event"] != "on_chat_model_stream":
+                continue
+            token = _chunk_text(event["data"]["chunk"])
+            if not token:
+                continue
 
-        if streaming:
-            # Already in the answer — collect it and print each token as it lands.
-            answer.append(token)
-            if echo:
-                print(token, end="", flush=True)
-            continue
+            if streaming:
+                # Already in the answer — collect it and print each token as it lands.
+                answer.append(token)
+                if echo:
+                    print(token, end="", flush=True)
+                continue
 
-        # Still in the reasoning portion: buffer and watch for the marker, which
-        # may be split across several tokens.
-        buffer += token
-        marker_at = buffer.find(_ANSWER_MARKER)
-        if marker_at != -1:
-            streaming = True
-            tail = buffer[marker_at + len(_ANSWER_MARKER):].lstrip()
-            answer.append(tail)
-            if echo:
-                print(f"\n{_SEPARATOR}\nAnswer (streaming):\n")
-                print(tail, end="", flush=True)
+            # Still in the reasoning portion: buffer and watch for the marker, which
+            # may be split across several tokens.
+            buffer += token
+            marker_at = buffer.find(_ANSWER_MARKER)
+            if marker_at != -1:
+                streaming = True
+                tail = buffer[marker_at + len(_ANSWER_MARKER):].lstrip()
+                answer.append(tail)
+                if echo:
+                    print(f"\n{_SEPARATOR}\nAnswer (streaming):\n")
+                    print(tail, end="", flush=True)
+    except Exception as exc:  # noqa: BLE001 — record the failure to the DLQ, then re-raise
+        from dlq.manager import DLQManager, classify_exception, flag_in_langfuse
+
+        reason = classify_exception(exc)
+        task_id = session_id or "ad-hoc"
+        DLQManager().add_failure(
+            task_id=task_id, question=question, reason=reason,
+            partial_state={"answer_so_far": "".join(answer)},
+        )
+        flag_in_langfuse(session_id, reason)
+        print(f"[DLQ] {task_id} failed: {reason}")
+        raise
 
     if echo:
         print()  # newline after the streamed answer

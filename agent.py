@@ -343,6 +343,51 @@ def add_task_cmd(description: str) -> None:
     click.echo(f"Added task {task['id'][:8]}: {description}")
 
 
+@cli.command(name="dlq-stats")
+def dlq_stats() -> None:
+    """Show DLQ failure counts by reason and classification."""
+    from dlq.manager import DLQManager
+
+    s = DLQManager().stats()
+    click.echo(f"Failures: {s['total']} total "
+               f"({s['active_transient']} transient active, {s['permanent']} permanent)")
+    if s["by_reason"]:
+        click.echo("By reason:")
+        for reason, n in sorted(s["by_reason"].items()):
+            click.echo(f"  {reason}: {n}")
+        click.echo(f"By classification: {s['by_classification']}")
+    else:
+        click.echo("(no failures recorded)")
+
+
+@cli.command(name="dlq-retry")
+def dlq_retry() -> None:
+    """Retry all transient failures with exponential backoff (1s, 2s, 4s)."""
+    from dlq.manager import DLQManager
+
+    r = DLQManager().retry_transient()
+    click.echo(
+        f"Retried {r['retried']}: {r['succeeded']} succeeded, "
+        f"{r['moved_to_permanent']} moved to permanent (max retries exceeded)."
+    )
+
+
+@cli.command(name="dlq-clear")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def dlq_clear(yes: bool) -> None:
+    """Clear permanent failures after review."""
+    from dlq.manager import DLQManager
+
+    mgr = DLQManager()
+    n = mgr.stats()["permanent"]
+    if n == 0:
+        click.echo("No permanent failures to clear.")
+        return
+    if not yes:
+        click.confirm(f"Clear {n} permanent failure(s)?", abort=True)
+    click.echo(f"Cleared {mgr.clear_permanent()} permanent failure(s).")
+
+
 @cli.command()
 @click.argument("question")
 def compare(question: str) -> None:

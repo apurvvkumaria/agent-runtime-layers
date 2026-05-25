@@ -16,8 +16,8 @@ and pulls in docs via RAG, and emits both print-based hooks and structured LangF
 That core is a ReAct agent (Claude + LangChain); later layers add a separate LangGraph
 multi-agent pipeline — and the same pipeline rebuilt with Strands — as contrasting
 paradigms. It can also run autonomously — on a cron schedule or a self-directing heartbeat
-loop. Every reasoning step is visible. It was built up in eighteen deliberate layers (see
-below), each adding one runtime capability.
+loop, with failed runs captured in a dead-letter queue. Every reasoning step is visible. It
+was built up in nineteen deliberate layers (see below), each adding one runtime capability.
 
 ## How to run it
 
@@ -42,6 +42,9 @@ uv run python agent.py compare "..."       # run both frameworks side by side
 uv run python agent.py add-task "..."      # queue a task for the heartbeat loop
 uv run python agent.py heartbeat           # process tasks.json on a loop (blocks)
 uv run python agent.py schedule "..." --cron "0 9 * * *" --output report.md  # cron (blocks)
+uv run python agent.py dlq-stats           # failed-run counts by reason/type
+uv run python agent.py dlq-retry           # replay transient failures (backoff)
+uv run python agent.py dlq-clear           # clear permanent failures after review
 uv run python agent.py context-stats "..." # token budget + RAG docs for a question
 uv run python agent.py test                # run tests + evals, print a summary
 ```
@@ -121,6 +124,7 @@ Nothing imports `agent`.
 | `context/` | `manager.py` — `ContextManager` (tiktoken token counts + per-source budgeting/truncation + budget report); `rag.py` — RAG over `docs/` (ChromaDB "docs" collection + sentence-transformers), auto-injected for storage/latency questions. |
 | `strands_agent/` | `agent.py` — the same pipeline via Strands: a research + a calculator specialist agent exposed to an orchestrator through `Agent.as_tool()`; the model decides routing (no explicit graph). Driven by `agent pipeline --framework strands` and `agent compare`. |
 | `autonomy/` | `scheduler.py` — `AgentScheduler` (cron via APScheduler) and `HeartbeatLoop` (polls `tasks.json`, runs pending tasks, self-directs follow-ups). Driven by `agent schedule` / `heartbeat` / `add-task`. State in `tasks.json` (git-ignored). |
+| `dlq/` | `manager.py` — `DLQManager`: records failed runs, classifies them transient/permanent, retries transient ones with exponential backoff, and reports stats. State in `dlq/*.json` (git-ignored). `core.stream_answer` records failures here. |
 | `api.py` | FastAPI app with async endpoints — `POST /ask`, `POST /chat` (per-session in-memory agents), `GET /metrics/{cluster}`, `GET /calc?expr=`, `GET /health` — plus CORS. Imports `core`. |
 | `agent.py` | The Click CLI only: `chat`, `ask`, `research`, `calc`, `metrics`, `history`, `serve`, `test`. The REPL (`converse`) lives here. Imports `core` + `api`. |
 | `tests/` | pytest suite — `test_tools.py` (unit), `test_api.py` (FastAPI TestClient integration, LLM stubbed), `conftest.py` (fixtures: `client`, `stub_llm`). No real API calls. |
@@ -133,7 +137,7 @@ Nothing imports `agent`.
 | `main.py` | The uv-generated stub. Not used by the agent; safe to ignore or repurpose. |
 | `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
 
-## The eighteen layers
+## The nineteen layers
 
 The agent was built incrementally, each layer adding one agent-runtime capability on top of
 the last. They all live in the current `agent.py`; this is the conceptual progression, not
@@ -159,6 +163,7 @@ separate files.
 | **16 — Memory decay** | Old context compresses, then expires | Extends `VectorStoreMemory`: each turn carries a tier that downgrades with age — `full` (<3d, verbatim) → `summary` (3-30d, one-sentence LLM summary) → `marker` (30-90d, `[Topic: … discussed on …]`) → `archived` (>90d, deleted). `decay_memory()` runs on init and via `agent memory-decay`; `load_memory_variables` renders each tier; `memory-stats` shows the breakdown. The age thresholds are configurable — `VectorStoreMemory(decay_days=...)` (partial overrides merge with defaults) or `memory-decay --summary-days/--marker-days/--archived-days`. | Not all history deserves equal space forever. Decay mirrors human memory — recent turns stay sharp, older ones blur to a gist, then a tag, then drop — keeping the retrievable store bounded and cheap without a hard cutoff. |
 | **17 — Streaming the pipeline** | Live node progress + token-by-token answer | `stream_pipeline()` uses LangGraph multi-mode streaming (`astream(stream_mode=["updates","messages"])`): "updates" reports each node as it completes (and accumulates final state), while "messages" streams the **writer** node's LLM tokens (filtered by `langgraph_node`) as they generate. `agent pipeline` (langgraph) now streams the answer live instead of printing it whole. | Layer 4 streamed the single ReAct loop; this streams a *multi-agent graph* — you watch the topology execute (which nodes fired, in order) and the final answer materialize token-by-token. The trick is filtering token events to just the answer-producing node so the calculator's LLM chatter doesn't leak into the output. |
 | **18 — Autonomous modes** | Run without a human in the loop | `autonomy/scheduler.py`: `AgentScheduler` runs a question on a cron schedule (APScheduler), appending timestamped answers to a file — once immediately to verify, then on schedule. `HeartbeatLoop` polls `tasks.json` every N seconds, runs pending tasks, marks them complete, and queues one agent-suggested follow-up per user task (self-directing, bounded so auto-tasks can't chain). CLI: `schedule` / `heartbeat` / `add-task`. | Up to now every run was human-triggered; this lets the agent run on a clock or off a task queue it can extend itself. Both are long-running blocking processes (like `serve`). The bound on self-direction matters — an agent that can add its own work needs a hard stop, or it runs away. |
+| **19 — Dead-letter queue** | Failed runs are captured, not lost | `dlq/manager.py`: `core.stream_answer` wraps each run; on failure it records to the DLQ with a reason, **classifies** it transient (tool_timeout / api_error_5xx / sandbox_crash) vs. permanent (budget_exceeded / api_error_4xx / max_retries_exceeded), and flags the run 0 in LangFuse. `dlq-retry` replays transient failures with exponential backoff (1s/2s/4s), promoting exhausted ones to permanent; `dlq-stats` / `dlq-clear` report and review. | Autonomous agents fail unattended — without a DLQ those failures vanish. The transient/permanent split decides what to auto-retry vs. surface for a human, and bounded backoff stops a flaky dependency from being hammered. The same idea as a message-queue DLQ, applied to agent runs. |
 
 ## Key concepts being learned
 
