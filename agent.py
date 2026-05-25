@@ -245,19 +245,87 @@ def memory_stats() -> None:
         click.echo("(no turns stored yet — run `agent chat` to populate the store)")
 
 
-@cli.command()
-@click.argument("question")
-def pipeline(question: str) -> None:
-    """Run the multi-agent LangGraph research pipeline on QUESTION."""
+def _run_langgraph(question: str) -> None:
     from langgraph_agents.pipeline import run_pipeline
 
+    click.echo("=== LangGraph (fixed graph) ===")
+    result = run_pipeline(question, on_node=lambda name: click.echo(f"[{name}]"))
+    click.echo(f"\nQuality score: {result['quality_score']} | tokens: {result.get('token_count', 0)}")
+    click.echo(f"\nFinal answer:\n{result['final_answer']}")
+
+
+def _run_strands(question: str) -> None:
+    from strands_agent.agent import run_strands
+
+    click.echo("=== Strands (model-driven) ===")
+    result = run_strands(question)
+    click.echo(f"steps: {result['steps']} | tokens: {result['tokens']}")
+    click.echo(f"\nFinal answer:\n{result['answer']}")
+
+
+@cli.command()
+@click.argument("question")
+@click.option(
+    "--framework", type=click.Choice(["langgraph", "strands", "both"]),
+    default="langgraph", show_default=True,
+    help="Which agent framework to run the pipeline on.",
+)
+def pipeline(question: str, framework: str) -> None:
+    """Run the multi-agent research pipeline on QUESTION."""
     try:
-        result = run_pipeline(question, on_node=lambda name: click.echo(f"[{name}]"))
+        if framework in ("langgraph", "both"):
+            _run_langgraph(question)
+        if framework == "both":
+            click.echo()
+        if framework in ("strands", "both"):
+            _run_strands(question)
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    click.echo(f"\nQuality score: {result['quality_score']}")
-    click.echo(f"\nFinal answer:\n{result['final_answer']}")
+
+@cli.command()
+@click.argument("question")
+def compare(question: str) -> None:
+    """Run QUESTION on both frameworks and compare steps, tokens, time, and quality."""
+    import time
+
+    from langgraph_agents.pipeline import run_pipeline, score_answer
+    from strands_agent.agent import run_strands
+
+    try:
+        # LangGraph
+        nodes: list[str] = []
+        t0 = time.perf_counter()
+        lg = run_pipeline(question, on_node=nodes.append)
+        lg_time = time.perf_counter() - t0
+        lg_answer = lg["final_answer"]
+        lg_quality = lg.get("quality_score", score_answer(question, lg_answer))
+
+        # Strands
+        t1 = time.perf_counter()
+        st = run_strands(question)
+        st_time = time.perf_counter() - t1
+        st_answer = st["answer"]
+        st_quality = score_answer(question, st_answer)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo("\nFramework    | Nodes/Steps     | Total Tokens | Time (s) | Quality")
+    click.echo("-" * 70)
+    click.echo(f"LangGraph    | {len(nodes)} nodes        | {lg.get('token_count', 0):<12} | "
+               f"{lg_time:<8.1f} | {lg_quality}")
+    click.echo(f"Strands      | {st['steps']} steps (model) | {st['tokens']:<12} | "
+               f"{st_time:<8.1f} | {st_quality}")
+
+    click.echo(f"\n--- LangGraph answer ---\n{lg_answer}")
+    click.echo(f"\n--- Strands answer ---\n{st_answer}")
+
+    # Winner: better quality, then fewer tokens.
+    if lg_quality != st_quality:
+        winner, why = ("LangGraph", "better quality") if lg_quality > st_quality else ("Strands", "better quality")
+    else:
+        winner, why = ("LangGraph", "fewer tokens") if lg.get("token_count", 0) <= st["tokens"] else ("Strands", "fewer tokens")
+    click.echo(f"\nWinner: {winner} ({why})")
 
 
 @cli.command(name="context-stats")
