@@ -195,6 +195,16 @@ Two kinds of checks: **tests** (`tests/`) assert deterministic plumbing with the
 stubbed; **evals** (`evals/`) assert probabilistic agent behavior — deterministic tool/answer
 cases, plus LLM-as-judge relevance scores written to LangFuse.
 
+**Cadence in production.** Today, evals run on demand via `agent test`. For a production
+deployment, the cadence would tier: deterministic plumbing tests on every commit (already in
+place, ~0 cost), tool-correctness and substring assertions on every PR (deterministic, no
+LLM), `AnswerRelevancyMetric` (LLM-as-judge via Claude) on every PR to `main` with response
+caching keyed on `(model, prompt, input)`, and full multi-pipeline behavioral evals (the
+LangGraph-vs-Strands comparison, RAG-on-vs-off) nightly. Sample 1–5% of production traffic
+for the same judge metrics and feed low-scoring traces back into the eval dataset. This
+matches the tiered pattern most production LLM teams converged on in 2026: deterministic at
+base, classifier in the middle, LLM-judge at the top, behavioral end-to-end on the side.
+
 ### MCP
 
 The agent speaks the Model Context Protocol both ways:
