@@ -129,35 +129,52 @@ uv run python agent.py sandbox-info                 # gateway + sandboxes + acti
 uv run python agent.py sandbox-ask "What is 2 + 2?" # run `ask` inside a sandbox, then delete it
 ```
 
-`sandbox-ask` creates a sandbox via
-`openshell sandbox create --from <image> --name <n> --cpu 2 --memory 1Gi --policy openshell/policy.yaml`
-(verified against v0.0.47), uploads the project source into `/sandbox/workspace`
-over the Docker control plane, runs `agent.py ask` inside it via
-`openshell sandbox exec -n <n> --workdir /sandbox/workspace -- python agent.py ask "…"`,
-prints the answer, and deletes the sandbox (pass `--keep` to leave it running).
+`sandbox-ask` does the whole round trip in **one** `openshell sandbox create`
+call — the CLI is built for it:
 
-### The real policy schema (and what verified vs. didn't)
+```sh
+openshell sandbox create --from <image> --name <n> --cpu 2 --memory 1Gi \
+  --policy openshell/policy.yaml \
+  --upload <staged-workspace>:/sandbox \
+  --no-tty --no-keep \
+  -- sh -lc 'cd /sandbox/workspace && export TIKTOKEN_CACHE_DIR=/sandbox/.tiktoken && exec python agent.py ask "…"'
+```
+
+`--upload` stages files in, `-- <cmd>` runs the agent, `--no-keep` deletes the
+sandbox when the command exits (`--keep` to leave it running). Because `--upload`
+can only be given once and nests by basename (`<dir>:/sandbox` → `/sandbox/<dir-name>`),
+`sandbox_runner` stages the source **plus** a generated `.env` into one temp
+`workspace/` dir and uploads that. The repo's own `.env` is git-ignored, so the
+API key has to be injected deliberately.
+
+### The real policy schema, and the gotchas that took live debugging
 
 `openshell/policy.yaml` uses the **actual** v0.0.47 schema (`version`,
 `filesystem_policy`, `landlock`, `process`, `network_policies`) — a naive
 `sandbox: {resources, network: {allow/deny}, filesystem: {writable/denied}}`
-shape is **rejected** by the gateway (`unknown field 'sandbox'`). Two things
-worth internalizing:
+shape is **rejected** by the gateway (`unknown field 'sandbox'`). The hard-won
+details, all confirmed against the gateway's own logs:
 
 - **Egress is binary-keyed and default-deny.** A `network_policies` entry binds
   *endpoints* (host/port) to the specific *binaries* allowed to reach them
-  (identity via `/proc` inode + exe path, SHA256 trust-on-first-use). There is
-  no `deny: '*'` — anything unlisted is denied. So we allow the sandbox's python
-  interpreter → `api.anthropic.com` + the DuckDuckGo hosts, and nothing else.
-- **Resources aren't policy fields** — `cpu`/`memory` are `create` flags, so
-  `sandbox_runner` passes `--cpu 2 --memory 1Gi`.
+  (identity via the fully-resolved `/proc/{pid}/exe`, SHA256 trust-on-first-use).
+  No `deny: '*'` — anything unlisted is denied.
+- **Match the binary on its resolved path.** `/sandbox/.venv/bin/python` is a
+  symlink chain ending at uv's patch-versioned interpreter
+  (`/sandbox/.uv/python/cpython-3.13.12-…/bin/python3.13`), and OPA matches the
+  resolved path — so the policy allowlists the glob `/sandbox/.uv/python/**`.
+- **`tls: skip`, not `terminate`.** Automatic TLS termination MITMs the
+  connection with the gateway's cert, which the Anthropic Python SDK
+  (httpx + certifi) won't trust → cert failure. `skip` tunnels to the real cert.
+- **Resources aren't policy fields** — `cpu`/`memory` are `create` flags
+  (`--cpu 2 --memory 1Gi`).
+- **`exec`/the run command get a sanitized env** that drops the image's
+  Dockerfile `ENV`, so anything the agent needs (e.g. `TIKTOKEN_CACHE_DIR`) must
+  be exported in the run command.
 
-Verified live against the gateway: the policy is **accepted** and the sandbox
-reaches `Ready`; `create`/`exec --workdir`/upload/`delete` all work; and `base`
-already ships a python at `/sandbox/.venv/bin/python` (which is in the policy's
-allowlist, and is what `python` resolves to). **Not** verified end-to-end: the
-agent actually answering — because that needs an image carrying the project's
-langchain deps (see prerequisite below), which isn't built here.
+**Verified end-to-end:** `agent sandbox-ask "What is 2 + 2?"` runs the agent
+inside the sandbox under this policy and returns `2 + 2 = 4`, with the sandbox
+auto-deleted afterward — sole allowed egress being `api.anthropic.com`.
 
 **Prerequisite — the sandbox image must already contain the project's Python
 deps.** The policy allows egress only to Anthropic + DuckDuckGo, so the sandbox

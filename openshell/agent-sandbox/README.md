@@ -39,16 +39,17 @@ the run stays within the policy: the sole egress is `api.anthropic.com`.
 
 ## Notes / caveats
 
-- **Local image resolution.** `sandbox-ask` passes `--from agent-sandbox:latest`
-  to `openshell sandbox create`. OpenShell treats that as a full container image
-  reference and should use the local Docker image. If it instead tries to pull
-  from a registry, retag/point at a reference it resolves, or build the image
-  under a name it recognizes.
-- **`uv sync` and the existing venv.** The base image already created
-  `/sandbox/.venv` (via `uv venv --seed`). `uv sync` with
-  `UV_PROJECT_ENVIRONMENT=/sandbox/.venv` installs the locked deps into it. If a
-  uv version balks at the pre-existing venv, delete it first in the Dockerfile
-  (`RUN rm -rf /sandbox/.venv`) and let `uv sync` recreate it at that path.
+- **Local image resolution — confirmed.** `sandbox-ask` passes
+  `--from agent-sandbox:latest` and OpenShell uses the local Docker image (no
+  registry pull). Verified end-to-end.
+- **`uv sync` and the existing venv — confirmed.** The base image's seeded
+  `/sandbox/.venv` is reused by `uv sync` (with `UV_PROJECT_ENVIRONMENT` pointing
+  at it); no need to delete it first.
+- **tiktoken cache + a sanitized run env.** The image bakes the `cl100k_base`
+  encoding to `/sandbox/.tiktoken` (the policy denies its blob host at run time).
+  But `openshell exec` runs with a sanitized env that **drops the image's
+  Dockerfile `ENV`**, so `sandbox_runner` re-exports `TIKTOKEN_CACHE_DIR` in the
+  run command. Anything else the agent needs from env must be exported there too.
 - **The `filesystem` tool needs npm at run time.** It's only invoked for doc
   reads (not for `What is 2 + 2?`), and the MCP server is fetched via `npx` —
   which the policy blocks. To exercise that tool in-sandbox, pre-install
