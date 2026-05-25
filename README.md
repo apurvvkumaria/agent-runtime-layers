@@ -125,6 +125,7 @@ uv run python agent.py add-task "..."      # queue a task for the heartbeat loop
 uv run python agent.py heartbeat           # process tasks.json on a loop (blocks)
 uv run python agent.py schedule "..." --cron "0 9 * * *" --output report.md  # cron (blocks)
 uv run python agent.py dlq-stats           # failed-run counts; dlq-retry / dlq-clear too
+uv run python agent.py ask "..." --timeout 1   # force a tool_timeout into the DLQ (testing)
 uv run python agent.py context-stats "..." # token budget + RAG docs for a question
 uv run python agent.py test                # run tests + evals, print a summary
 ```

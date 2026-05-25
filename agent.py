@@ -91,11 +91,19 @@ def chat() -> None:
 
 @cli.command()
 @click.argument("question")
-def ask(question: str) -> None:
+@click.option(
+    "--timeout", type=float, default=None,
+    help="Max seconds for the run; on timeout it's recorded to the DLQ as tool_timeout.",
+)
+def ask(question: str, timeout: float | None) -> None:
     """Answer a single QUESTION and exit (no interactive loop, no memory)."""
     executor = _build_or_die(build_single_shot_agent)
     try:
-        asyncio.run(stream_answer(executor, question, new_session_id()))
+        asyncio.run(stream_answer(executor, question, new_session_id(), timeout=timeout))
+    except Exception as exc:  # noqa: BLE001 — already recorded to the DLQ in core
+        raise click.ClickException(
+            f"Run failed ({type(exc).__name__}); recorded to the DLQ — see `agent dlq-stats`."
+        ) from exc
     finally:
         flush_traces()
 

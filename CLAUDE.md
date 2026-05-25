@@ -45,6 +45,7 @@ uv run python agent.py schedule "..." --cron "0 9 * * *" --output report.md  # c
 uv run python agent.py dlq-stats           # failed-run counts by reason/type
 uv run python agent.py dlq-retry           # replay transient failures (backoff)
 uv run python agent.py dlq-clear           # clear permanent failures after review
+uv run python agent.py ask "..." --timeout 1   # force a tool_timeout into the DLQ (testing)
 uv run python agent.py context-stats "..." # token budget + RAG docs for a question
 uv run python agent.py test                # run tests + evals, print a summary
 ```

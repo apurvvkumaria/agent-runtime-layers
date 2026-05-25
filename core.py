@@ -5,7 +5,9 @@ build on. It knows nothing about Click or FastAPI — just how to construct and 
 the ReAct agent.
 """
 
+import asyncio
 import os
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 
@@ -206,6 +208,7 @@ async def stream_answer(
     question: str,
     session_id: str | None = None,
     echo: bool = True,
+    timeout: float | None = None,
 ) -> str:
     """Run one turn; stream the final answer token-by-token and return it.
 
@@ -231,32 +234,36 @@ async def stream_answer(
             "langfuse_tags": ["agent-practice", "react-agent"],
         },
     }
+    # A timeout fires inside this try so the DLQ wrap below records it (as a
+    # TimeoutError -> tool_timeout) instead of crashing uncaught.
+    guard = asyncio.timeout(timeout) if timeout else nullcontext()
     try:
-        async for event in executor.astream_events({"input": agent_input}, version="v2", config=config):
-            if event["event"] != "on_chat_model_stream":
-                continue
-            token = _chunk_text(event["data"]["chunk"])
-            if not token:
-                continue
+        async with guard:
+            async for event in executor.astream_events({"input": agent_input}, version="v2", config=config):
+                if event["event"] != "on_chat_model_stream":
+                    continue
+                token = _chunk_text(event["data"]["chunk"])
+                if not token:
+                    continue
 
-            if streaming:
-                # Already in the answer — collect it and print each token as it lands.
-                answer.append(token)
-                if echo:
-                    print(token, end="", flush=True)
-                continue
+                if streaming:
+                    # Already in the answer — collect it and print each token as it lands.
+                    answer.append(token)
+                    if echo:
+                        print(token, end="", flush=True)
+                    continue
 
-            # Still in the reasoning portion: buffer and watch for the marker, which
-            # may be split across several tokens.
-            buffer += token
-            marker_at = buffer.find(_ANSWER_MARKER)
-            if marker_at != -1:
-                streaming = True
-                tail = buffer[marker_at + len(_ANSWER_MARKER):].lstrip()
-                answer.append(tail)
-                if echo:
-                    print(f"\n{_SEPARATOR}\nAnswer (streaming):\n")
-                    print(tail, end="", flush=True)
+                # Still in the reasoning portion: buffer and watch for the marker,
+                # which may be split across several tokens.
+                buffer += token
+                marker_at = buffer.find(_ANSWER_MARKER)
+                if marker_at != -1:
+                    streaming = True
+                    tail = buffer[marker_at + len(_ANSWER_MARKER):].lstrip()
+                    answer.append(tail)
+                    if echo:
+                        print(f"\n{_SEPARATOR}\nAnswer (streaming):\n")
+                        print(tail, end="", flush=True)
     except Exception as exc:  # noqa: BLE001 — record the failure to the DLQ, then re-raise
         from dlq.manager import DLQManager, classify_exception, flag_in_langfuse
 
