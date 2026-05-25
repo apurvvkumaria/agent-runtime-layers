@@ -175,6 +175,32 @@ def _chunk_text(chunk) -> str:
     return "".join(parts)
 
 
+def _prepare_input(question: str, echo: bool) -> str:
+    """Apply context management before the LLM call.
+
+    For storage/latency questions, retrieve relevant docs via RAG and prepend them
+    to the question. A ContextManager bounds each source to its token budget (and
+    logs usage); when `echo`, the budget report is printed. Context modules are
+    imported lazily so non-agent code paths don't pay for tiktoken/chroma.
+    """
+    from context.manager import ContextManager
+    from context.rag import needs_rag, retrieve
+
+    cm = ContextManager()
+    ctx = {"question": question}
+    if needs_rag(question):
+        ctx["retrieved_context"] = retrieve(question)
+
+    ctx = cm.enforce_budget(ctx)  # truncate each source to budget + log usage
+    if echo:
+        print(cm.budget_report(ctx))
+
+    retrieved = ctx.get("retrieved_context")
+    if retrieved:
+        return f"Relevant documentation:\n{retrieved}\n\nQuestion: {ctx['question']}"
+    return ctx["question"]
+
+
 async def stream_answer(
     executor: AgentExecutor,
     question: str,
@@ -189,6 +215,7 @@ async def stream_answer(
     "Final Answer:" stay in the reasoning trace; tokens after it are the answer,
     printed live (when `echo`) and returned for callers that persist it.
     """
+    agent_input = _prepare_input(question, echo)
     buffer = ""          # accumulates tokens until we spot the marker
     streaming = False     # flips True once we're past "Final Answer:"
     answer: list[str] = []  # the final-answer text, collected for the return value
@@ -204,7 +231,7 @@ async def stream_answer(
             "langfuse_tags": ["agent-practice", "react-agent"],
         },
     }
-    async for event in executor.astream_events({"input": question}, version="v2", config=config):
+    async for event in executor.astream_events({"input": agent_input}, version="v2", config=config):
         if event["event"] != "on_chat_model_stream":
             continue
         token = _chunk_text(event["data"]["chunk"])

@@ -11,10 +11,11 @@ The agent has three front doors — a Click CLI (`agent.py`), a FastAPI REST ser
 (`core.py`): it reasons with Claude, calls tools (web search, a calculator, a fake
 storage-metrics backend, and an MCP-backed filesystem reader) to gather facts, remembers
 the conversation across turns (buffer or semantic vector memory), streams its final answer
-token-by-token, loads its system prompts from files (or LangFuse), and emits both
-print-based hooks and structured LangFuse traces. A separate LangGraph pipeline composes
-several agents into a research workflow. Every reasoning step is visible. It was built up in
-thirteen deliberate layers (see below), each adding one runtime capability.
+token-by-token, loads its system prompts from files (or LangFuse), manages its token budget
+and pulls in docs via RAG, and emits both print-based hooks and structured LangFuse traces.
+A separate LangGraph pipeline composes several agents into a research workflow. Every
+reasoning step is visible. It was built up in fourteen deliberate layers (see below), each
+adding one runtime capability.
 
 ## How to run it
 
@@ -34,6 +35,7 @@ uv run python agent.py sync-prompt         # push local single-shot prompt to La
 uv run python agent.py memory-stats        # vector-store turns + estimated token savings
 uv run python agent.py memory-clear        # wipe all stored turns (--yes to skip prompt)
 uv run python agent.py pipeline "..."      # multi-agent LangGraph research pipeline
+uv run python agent.py context-stats "..." # token budget + RAG docs for a question
 uv run python agent.py test                # run tests + evals, print a summary
 ```
 
@@ -91,6 +93,7 @@ This project uses **uv** for dependency and environment management. Add deps wit
 | `chromadb` | Persistent vector store for conversation memory (`./chroma_db/`). Needs a native arm64 mac / linux / win venv (no x86_64-mac wheel). |
 | `sentence-transformers` | Local `all-MiniLM-L6-v2` embeddings (free, no API key) for vector memory. Pulls `torch`; same arm64/non-x86_64-mac requirement. |
 | `langgraph` | The multi-agent pipeline (`langgraph_agents/`) — a `StateGraph` with conditional edges and a retry loop. |
+| `tiktoken` | Token counting (cl100k_base) for the context-budget manager (`context/`). |
 
 ## Project structure
 
@@ -106,10 +109,11 @@ Nothing imports `agent`.
 | `prompts/` | The prompt library: `single_shot_agent.md`, `chat_agent.md`, `research_agent.md`, `storage_agent.md` (each a full ReAct template), plus `loader.py` (`load_prompt(name, **kwargs)`). |
 | `memory/` | `vector_store.py` — `VectorStoreMemory` (BaseMemory) with top-k semantic retrieval, embeddings from sentence-transformers `all-MiniLM-L6-v2`, persisted in a ChromaDB `PersistentClient` under `./chroma_db/`. |
 | `langgraph_agents/` | `pipeline.py` — a LangGraph `StateGraph` of five agent nodes (orchestrator → research/calculator → writer → reviewer) with a quality-gated retry loop. Separate from the ReAct `core`; driven by `agent pipeline`. |
+| `context/` | `manager.py` — `ContextManager` (tiktoken token counts + per-source budgeting/truncation + budget report); `rag.py` — RAG over `docs/` (ChromaDB "docs" collection + sentence-transformers), auto-injected for storage/latency questions. |
 | `api.py` | FastAPI app with async endpoints — `POST /ask`, `POST /chat` (per-session in-memory agents), `GET /metrics/{cluster}`, `GET /calc?expr=`, `GET /health` — plus CORS. Imports `core`. |
 | `agent.py` | The Click CLI only: `chat`, `ask`, `research`, `calc`, `metrics`, `history`, `serve`, `test`. The REPL (`converse`) lives here. Imports `core` + `api`. |
 | `tests/` | pytest suite — `test_tools.py` (unit), `test_api.py` (FastAPI TestClient integration, LLM stubbed), `conftest.py` (fixtures: `client`, `stub_llm`). No real API calls. |
-| `evals/` | Behavioral evals via **deepeval** (real LLM calls): `deterministic_evals.py` (`LLMTestCase` + `ToolCorrectnessMetric` + custom `SubstringMetric`), `langfuse_evals.py` (`AnswerRelevancyMetric` scored onto LangFuse traces), `judge.py` (Claude-backed `DeepEvalBaseLLM` judge), `memory_comparison.py` (buffer vs. vector token footprint, no LLM), `run_all.py` (runs pytest + both eval suites and prints a summary). |
+| `evals/` | Behavioral evals via **deepeval** (real LLM calls): `deterministic_evals.py` (`LLMTestCase` + `ToolCorrectnessMetric` + custom `SubstringMetric`), `langfuse_evals.py` (`AnswerRelevancyMetric` scored onto LangFuse traces), `judge.py` (Claude-backed `DeepEvalBaseLLM` judge), `memory_comparison.py` (buffer vs. vector token footprint, no LLM), `rag_comparison.py` (answer quality + token cost with vs. without RAG, raw LLM), `run_all.py` (runs pytest + both eval suites and prints a summary). |
 | `mcp_integration/` | MCP, both directions. `client.py` wraps the official filesystem MCP server as the `filesystem` LangChain tool (sandboxed to `docs/`); `server.py` exposes `ask_agent` / `get_storage_metrics` / `calculate` as MCP tools via FastMCP. Named `mcp_integration`, not `mcp`, to avoid shadowing the `mcp` SDK. |
 | `docs/` | Markdown read by the `filesystem` tool — `openShell_overview.md`, `sla_thresholds.md`, `agent_patterns.md`. The MCP filesystem server's only allowed directory. |
 | `.env.example` | Committed template of required env vars (`ANTHROPIC_API_KEY`, `LANGFUSE_*`). Copy to `.env` and fill in. |
@@ -118,7 +122,7 @@ Nothing imports `agent`.
 | `main.py` | The uv-generated stub. Not used by the agent; safe to ignore or repurpose. |
 | `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
 
-## The thirteen layers
+## The fourteen layers
 
 The agent was built incrementally, each layer adding one agent-runtime capability on top of
 the last. They all live in the current `agent.py`; this is the conceptual progression, not
@@ -139,6 +143,7 @@ separate files.
 | **11 — Prompt management** | Prompts as managed assets, not string literals | System prompts moved out of `core.py` into `prompts/*.md` loaded by `load_prompt()`; each builder picks its prompt (`single_shot_agent`, `chat_agent`, `research_agent`). The single-shot prompt is also fetched from LangFuse first (`react-agent-prompt`) with the local file as fallback; `agent sync-prompt` pushes the local copy to LangFuse as a new version. | Prompts are product, and they drift: keeping them in files makes them reviewable in diffs, and registering them in LangFuse lets you version and roll them forward without a redeploy. The fallback chain (LangFuse → file) means the agent still runs offline. Mind that prompt wording *is* behavior — a "be concise, answer directly" tweak made the model skip the calculator and broke two evals until reworded. |
 | **12 — Vector-store memory** | Bounded memory via semantic retrieval | `build_chat_agent` defaults to `VectorStoreMemory` (`memory/vector_store.py`): each turn is embedded and stored; `load_memory_variables` returns only the top-k *similar* past turns instead of the whole transcript. `use_buffer_memory=True` keeps the old `ConversationBufferMemory` for comparison; `agent memory-stats` and `evals/memory_comparison.py` quantify the difference (~65% fewer history tokens at 8+ turns). | Buffer memory grows linearly — every turn re-sends the full history, so cost climbs with conversation length. Vector memory trades exactness for a bounded footprint: embed turns, retrieve the few relevant ones. Backed by sentence-transformers `all-MiniLM-L6-v2` + ChromaDB. (This was first built torch-free on an x86_64-Rosetta venv where torch/onnxruntime have no wheels; the project was then migrated to a native arm64 toolchain — see the platform note — which unblocked the real stack.) |
 | **13 — Multi-agent (LangGraph)** | A graph of cooperating agents | `langgraph_agents/pipeline.py`: a `StateGraph` over `ResearchState` with five nodes — orchestrator (routes by question: research/calculate/both), research (DuckDuckGo), calculator (LLM derives an expression → calculator tool), writer (drafts), reviewer (scores 0-1 by an additive rubric). Conditional edges branch on the route and loop reviewer→research while `quality < 0.7 and retry_count < 2`. `agent pipeline "..."` streams each node. | This is a different control structure from the ReAct loop: instead of one LLM choosing tools turn-by-turn, the *graph* fixes the topology and each node is a focused agent. You trade the ReAct loop's flexibility for explicit, inspectable routing and a built-in quality gate / retry — easier to reason about and to bound. |
+| **14 — Context management** | Budget the window; ground in docs | `context/manager.py` allocates a token budget across sources (system prompt / history / retrieved / tool results / question / response reserve), counts with tiktoken, truncates each to its share, and reports usage. `context/rag.py` indexes `docs/` into a ChromaDB "docs" collection and retrieves relevant chunks; `stream_answer` auto-injects them for storage/latency questions and prints the budget report when verbose. `agent context-stats "..."` previews the allocation; `evals/rag_comparison.py` shows token cost vs. answer quality. | The context window is a scarce, fixed budget — left unmanaged, history and retrieved text crowd out the question and the response. Explicit per-source budgeting makes the tradeoffs visible and bounded; RAG injects *just* the relevant docs (grounding the model on facts it otherwise can't know) at a measurable token cost. |
 
 ## Key concepts being learned
 

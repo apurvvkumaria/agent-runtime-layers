@@ -260,6 +260,35 @@ def pipeline(question: str) -> None:
     click.echo(f"\nFinal answer:\n{result['final_answer']}")
 
 
+@cli.command(name="context-stats")
+@click.argument("question")
+def context_stats(question: str) -> None:
+    """Show the token budget, RAG docs, and estimated context size for QUESTION."""
+    from context.manager import ContextManager
+    from context.rag import needs_rag, relevant_docs
+    from prompts.loader import load_prompt
+
+    cm = ContextManager()
+    ctx = {"system_prompt": load_prompt("single_shot_agent"), "question": question}
+    docs: list[str] = []
+    if needs_rag(question):
+        hits = relevant_docs(question, k=3)
+        docs = [h["source"] for h in hits]
+        ctx["retrieved_context"] = "\n\n".join(h["text"] for h in hits)
+
+    ctx = cm.enforce_budget(ctx)
+    click.echo(cm.budget_report(ctx))
+    click.echo(f"\nRAG triggered: {needs_rag(question)}")
+    if docs:
+        click.echo("Docs retrieved: " + ", ".join(sorted(set(docs))))
+    context_total = sum(cm.count_tokens(t) for t in ctx.values())
+    reserve = cm.CONTEXT_BUDGET["response_reserve"]
+    click.echo(
+        f"Estimated context tokens before LLM call: {context_total} "
+        f"(+{reserve} reserved for the response)"
+    )
+
+
 @cli.command(name="memory-clear")
 @click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
 def memory_clear(yes: bool) -> None:

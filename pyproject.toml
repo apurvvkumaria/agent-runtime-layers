@@ -20,6 +20,7 @@ dependencies = [
     "pytest>=9.0.3",
     "python-dotenv>=1.2.2",
     "sentence-transformers>=5.5.1",
+    "tiktoken>=0.13.0",
     "uvicorn>=0.47.0",
 ]
 
