@@ -312,6 +312,39 @@ def pipeline(question: str, framework: str) -> None:
 
 @cli.command()
 @click.argument("question")
+@click.option("--cron", "cron_expr", required=True, help="Cron expression, e.g. '0 9 * * *'.")
+@click.option("--output", default="report.md", show_default=True, help="File to append answers to.")
+def schedule(question: str, cron_expr: str, output: str) -> None:
+    """Run QUESTION on a cron schedule (runs once immediately, then blocks)."""
+    from autonomy.scheduler import AgentScheduler
+
+    try:
+        AgentScheduler(on_log=click.echo).schedule(question, cron_expr, output)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@cli.command()
+@click.option("--interval", default=60, show_default=True, type=int, help="Seconds between ticks.")
+def heartbeat(interval: int) -> None:
+    """Run a heartbeat loop that processes pending tasks from tasks.json (blocks)."""
+    from autonomy.scheduler import HeartbeatLoop
+
+    HeartbeatLoop(interval=interval, on_log=click.echo).run()
+
+
+@cli.command(name="add-task")
+@click.argument("description")
+def add_task_cmd(description: str) -> None:
+    """Add a pending task to tasks.json for the heartbeat loop to pick up."""
+    from autonomy.scheduler import add_task
+
+    task = add_task(description)
+    click.echo(f"Added task {task['id'][:8]}: {description}")
+
+
+@cli.command()
+@click.argument("question")
 def compare(question: str) -> None:
     """Run QUESTION on both frameworks and compare steps, tokens, time, and quality."""
     import time

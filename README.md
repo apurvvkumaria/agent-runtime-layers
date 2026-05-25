@@ -1,9 +1,9 @@
 # agent-runtime-layers
 
-![Layers](https://img.shields.io/badge/layers-17-blue)
+![Layers](https://img.shields.io/badge/layers-18-blue)
 
 A small research agent — **Claude, LangChain, LangGraph, and Strands** — built up in
-**seventeen deliberate layers**, each adding one agent-runtime capability. The core is a
+**eighteen deliberate layers**, each adding one agent-runtime capability. The core is a
 ReAct agent; later layers add a LangGraph multi-agent pipeline, and the same pipeline
 rebuilt with Strands, as contrasting paradigms. It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
@@ -11,13 +11,13 @@ calling, memory, streaming, lifecycle hooks, production tracing, a CLI, a REST A
 tests + evals, MCP (Model Context Protocol) in both directions, file/LangFuse-based
 prompt management, vector-store memory, a LangGraph multi-agent pipeline, token-budget
 context management with RAG, a LangGraph-vs-Strands comparison, age-based memory decay,
-and a streaming multi-agent graph.
+a streaming multi-agent graph, and autonomous (cron + heartbeat) operation.
 
 ```bash
 uv run python agent.py ask "What is a Merkle tree?"
 ```
 
-## The seventeen layers
+## The eighteen layers
 
 The agent was built incrementally; each layer adds one capability on top of the last.
 
@@ -40,6 +40,7 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **15 — Strands + framework comparison** | The same pipeline, model-driven | The research pipeline rebuilt with Strands Agents — research + calculator specialists exposed to an orchestrator via `Agent.as_tool()`, with *no* explicit graph (the model decides routing). `agent pipeline --framework {langgraph,strands,both}` runs either; `agent compare "..."` tabulates nodes/steps, tokens, time, and quality. Fixed graph (cheap, predictable) vs. emergent model-driven orchestration (flexible, more LLM round-trips). |
 | **16 — Memory decay** | Old context compresses, then expires | Each stored turn carries a tier that downgrades with age: `full` (<3d, verbatim) → `summary` (3-30d, one-sentence LLM summary) → `marker` (30-90d, topic tag) → `archived` (>90d, deleted). `agent memory-decay` ages turns out; `memory-stats` shows the breakdown. Keeps the retrievable store bounded without a hard cutoff — recent stays sharp, old blurs to a gist, then drops. |
 | **17 — Streaming the pipeline** | Live node progress + token-by-token answer | `agent pipeline` (LangGraph) streams via multi-mode `astream(["updates","messages"])`: node names print as they complete, and the writer node's answer streams token-by-token (filtered by `langgraph_node`). Layer 4 streamed the single ReAct loop; this streams a multi-agent graph. |
+| **18 — Autonomous modes** | Run without a human in the loop | `AgentScheduler` runs a question on a cron schedule (APScheduler), appending timestamped answers to a file; `HeartbeatLoop` polls `tasks.json`, runs pending tasks, and queues agent-suggested follow-ups (self-directing, bounded). CLI: `agent schedule`/`heartbeat`/`add-task`. Both are long-running blocking processes. |
 
 ## How it works
 
@@ -77,6 +78,7 @@ an `Observation:` and re-prompts — looping until the model emits `Final Answer
 | `langgraph` | The multi-agent pipeline — a `StateGraph` with conditional edges and a retry loop. |
 | `tiktoken` | Token counting (cl100k_base) for the context-budget manager. |
 | `strands-agents` / `strands-agents-tools` | The Strands agents-as-tools pipeline (model-driven routing). |
+| `apscheduler` | Cron scheduling for autonomous mode. |
 
 Managed with [uv](https://docs.astral.sh/uv/). Requires Python 3.13+ on a native **arm64**
 mac (or linux/win) — `torch`/`onnxruntime` (for the vector-memory stack) have no
@@ -117,6 +119,9 @@ uv run python agent.py memory-clear        # wipe all stored turns (use --yes to
 uv run python agent.py memory-decay        # age out stored turns by tier
 uv run python agent.py pipeline "..."      # multi-agent pipeline (--framework langgraph|strands|both)
 uv run python agent.py compare "..."       # run LangGraph vs Strands side by side
+uv run python agent.py add-task "..."      # queue a task for the heartbeat loop
+uv run python agent.py heartbeat           # process tasks.json on a loop (blocks)
+uv run python agent.py schedule "..." --cron "0 9 * * *" --output report.md  # cron (blocks)
 uv run python agent.py context-stats "..." # token budget + RAG docs for a question
 uv run python agent.py test                # run tests + evals, print a summary
 ```
@@ -186,6 +191,7 @@ version. Editing a prompt is a behavior change — re-run `agent test` after.
 | `memory/` | `vector_store.py` — `VectorStoreMemory` with top-k semantic retrieval (sentence-transformers + ChromaDB) and age-based decay tiers. |
 | `langgraph_agents/` | `pipeline.py` — a LangGraph `StateGraph` of five agent nodes with a quality-gated retry loop (`agent pipeline`). |
 | `strands_agent/` | `agent.py` — the same pipeline via Strands (agents-as-tools, model-driven routing). |
+| `autonomy/` | `scheduler.py` — cron `AgentScheduler` + task-driven `HeartbeatLoop` (`agent schedule`/`heartbeat`/`add-task`). |
 | `context/` | `manager.py` (tiktoken token budgeting) + `rag.py` (RAG over `docs/` via ChromaDB). |
 | `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
 | `tests/` | pytest suite — tool units + API integration (LLM stubbed). |

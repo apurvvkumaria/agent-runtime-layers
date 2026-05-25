@@ -26,3 +26,7 @@ report.md
 # Vector store memory (persisted embeddings)
 vector_store/
 chroma_db/
+
+# Autonomous-mode runtime state
+tasks.json
+dlq.json
