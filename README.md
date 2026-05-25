@@ -1,9 +1,9 @@
 # agent-runtime-layers
 
-![Layers](https://img.shields.io/badge/layers-21-blue)
+![Layers](https://img.shields.io/badge/layers-22-blue)
 
 A small research agent — **Claude, LangChain, LangGraph, and Strands** — built up in
-**twenty-one deliberate layers**, each adding one agent-runtime capability. The core is a
+**twenty-two deliberate layers**, each adding one agent-runtime capability. The core is a
 ReAct agent; later layers add a LangGraph multi-agent pipeline, and the same pipeline
 rebuilt with Strands, as contrasting paradigms. It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
@@ -12,14 +12,15 @@ tests + evals, MCP (Model Context Protocol) in both directions, file/LangFuse-ba
 prompt management, vector-store memory, a LangGraph multi-agent pipeline, token-budget
 context management with RAG, a LangGraph-vs-Strands comparison, age-based memory decay,
 a streaming multi-agent graph, autonomous (cron + heartbeat) operation, a dead-letter
-queue for failed runs, a composed skill, and — the final layer — running the whole agent
-inside an **NVIDIA OpenShell** sandbox under a declarative network/filesystem policy.
+queue for failed runs, a composed skill, running the whole agent inside an **NVIDIA
+OpenShell** sandbox under a declarative network/filesystem policy, and a two-tier cache that
+makes re-running the LLM-as-judge evals cost zero tokens.
 
 ```bash
 uv run python agent.py ask "What is a Merkle tree?"
 ```
 
-## The twenty-one layers
+## The twenty-two layers
 
 The agent was built incrementally; each layer adds one capability on top of the last.
 
@@ -46,12 +47,13 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **19 — Dead-letter queue** | Failed runs are captured, not lost | `core` records each failed run to a DLQ with a reason, classified transient (retry) vs. permanent (review). `agent dlq-retry` replays transient failures with exponential backoff (promoting exhausted ones to permanent); `dlq-stats`/`dlq-clear` report and review. Failures are also flagged 0 in LangFuse. Same idea as a message-queue DLQ, for agent runs. |
 | **20 — Skills (composed tools)** | One tool that orchestrates several | `research_and_summarize` is a `@tool` that internally runs web search → storage metrics → LLM summarization and returns a structured report (Research Findings / Storage Context / Summary). It's in `get_tools()`, so the agent picks it for "research and summarize" requests; `agent skill "..."` runs it directly. A skill packages a multi-tool workflow behind one tool interface (same pattern as OpenClaw skills). |
 | **21 — Run inside an OpenShell sandbox** ✅ *verified* | The agent executes under a declarative sandbox policy | `agent sandbox-ask "…"` runs the whole agent inside an NVIDIA OpenShell sandbox via one `openshell sandbox create --upload … --no-keep -- … agent.py ask`, then auto-deletes it; `agent sandbox-info` shows gateway/sandboxes/policy. The policy (`openshell/policy.yaml`, real v0.0.47 schema) is **binary-keyed, default-deny** egress — the sandbox's python may reach only `api.anthropic.com` + DuckDuckGo. `openshell/agent-sandbox/` bakes the deps; setup in `openshell/setup.md` + `scripts/`. Verified end-to-end: answers `2 + 2 = 4` from inside the sandbox. The agent as an isolated, policy-constrained workload instead of a host process. |
+| **22 — Eval response caching** | Re-judging unchanged prompts costs zero tokens | The LLM-as-judge is the expensive part of an eval run, and at temperature 0 it's deterministic given `(prompt, input, model)` — so it's cacheable. `evals/cache.py` is a JSON cache keyed on `SHA256(prompt, input, model)`; `judge.py` serves every judge call through a **two-tier** cache (in-process `lru_cache` over the JSON), logging `[cache hit]` / `[cache miss] N tokens`. `agent eval-cache-stats` reports entries / hit-rate / tokens + cost saved; `agent eval-cache-demo` judges fixed cases twice. Verified: 6 judge calls → run 1 spends 6,270 tokens, run 2 is all disk hits, 0 tokens. |
 
 ## Architecture
 
 The runtime data flow: every front door — the Click **CLI**, the FastAPI **REST API**,
 and the **MCP** server — runs over one shared ReAct **core**, which orchestrates tools,
-memory, hooks, and context/RAG around the Claude LLM. The twenty-one layers stack on top
+memory, hooks, and context/RAG around the Claude LLM. The twenty-two layers stack on top
 of this spine.
 
 ![Agent runtime architecture: CLI/API/MCP → core → tools/memory/hooks/context → Claude](assets/agent_runtime_layers_architecture.svg)
@@ -380,7 +382,7 @@ reusing warm sandboxes (the warm number is ≤ host). So the latency optimizatio
 | `openshell/` | Layer 21 config + docs (not a Python package, so it can't shadow the `openshell` SDK): `policy.yaml` (sandbox network/fs policy), `setup.md` (macOS gateway setup), `agent-sandbox/` (deps-baked sandbox image). |
 | `assets/` | Architecture diagrams (SVG) embedded in this README. |
 | `tests/` | pytest suite — tool units + API integration (LLM stubbed). |
-| `evals/` | Real-agent behavioral evals: deterministic cases + LLM-as-judge scoring. |
+| `evals/` | Real-agent behavioral evals: deterministic cases + LLM-as-judge scoring, plus `cache.py` / `cache_demo.py` (Layer 22 — two-tier judge-response cache). |
 | `.env` | Local secrets (`LANGFUSE_*`). Git-ignored. |
 | `.agent_history.json` | Persisted conversation memory. Git-ignored; created on first turn. |
 | `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
