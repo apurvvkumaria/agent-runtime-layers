@@ -84,7 +84,9 @@ This project uses **uv** for dependency and environment management. Add deps wit
 | `pytest` | The unit/integration test runner (`tests/`). |
 | `deepeval` | The eval framework (`evals/`): `LLMTestCase`, `ToolCorrectnessMetric`, a custom `SubstringMetric`, and `AnswerRelevancyMetric` (judged by Claude via a custom `DeepEvalBaseLLM`). Pinned to 4.x for LangChain 1.x compatibility (see note below). |
 | `mcp` | The Model Context Protocol SDK — both the client (consume the filesystem server) and the server (expose the agent as MCP tools). |
-| `numpy` | Vectors + cosine similarity for the vector-store memory (`memory/`). |
+| `numpy` | Numeric support used across the ML stack. |
+| `chromadb` | Persistent vector store for conversation memory (`./chroma_db/`). Needs a native arm64 mac / linux / win venv (no x86_64-mac wheel). |
+| `sentence-transformers` | Local `all-MiniLM-L6-v2` embeddings (free, no API key) for vector memory. Pulls `torch`; same arm64/non-x86_64-mac requirement. |
 
 ## Project structure
 
@@ -98,7 +100,7 @@ Nothing imports `agent`.
 | `hooks.py` | Observability. `StepLogger` (print-based `on_tool_*`/`on_llm_*` callbacks) and the LangFuse handler setup. Exports `get_callbacks()` (print hooks + LangFuse when configured; LangFuse handler cached per process) and `flush_traces()`. |
 | `core.py` | The agent runtime, framework-agnostic. `build_memory()`, the two builders — `build_chat_agent()` (memory) and `build_single_shot_agent()` (none), prompt selection (`_react_prompt` — LangFuse-first then local file), `new_session_id()`, the `stream_answer()` streaming loop, and `load_recent_turns()`. Imports `tools` + `hooks` + `prompts.loader`. |
 | `prompts/` | The prompt library: `single_shot_agent.md`, `chat_agent.md`, `research_agent.md`, `storage_agent.md` (each a full ReAct template), plus `loader.py` (`load_prompt(name, **kwargs)`). |
-| `memory/` | `vector_store.py` — `VectorStoreMemory` (BaseMemory) with top-k semantic retrieval and a torch-free `HashingEmbedder`, persisted under `./vector_store/`. |
+| `memory/` | `vector_store.py` — `VectorStoreMemory` (BaseMemory) with top-k semantic retrieval, embeddings from sentence-transformers `all-MiniLM-L6-v2`, persisted in a ChromaDB `PersistentClient` under `./chroma_db/`. |
 | `api.py` | FastAPI app with async endpoints — `POST /ask`, `POST /chat` (per-session in-memory agents), `GET /metrics/{cluster}`, `GET /calc?expr=`, `GET /health` — plus CORS. Imports `core`. |
 | `agent.py` | The Click CLI only: `chat`, `ask`, `research`, `calc`, `metrics`, `history`, `serve`, `test`. The REPL (`converse`) lives here. Imports `core` + `api`. |
 | `tests/` | pytest suite — `test_tools.py` (unit), `test_api.py` (FastAPI TestClient integration, LLM stubbed), `conftest.py` (fixtures: `client`, `stub_llm`). No real API calls. |
@@ -130,7 +132,7 @@ separate files.
 | **9 — Testing + evals** | Automated quality gate | `tests/` (pytest: tool units + API integration with the LLM stubbed) and `evals/` (deepeval: deterministic `ToolCorrectnessMetric`/`SubstringMetric`, plus `AnswerRelevancyMetric` judged by Claude and scored onto LangFuse traces). `agent test` runs everything via `evals/run_all.py`. | Two kinds of checks for two kinds of failure: **tests** assert deterministic plumbing (fast, free, stub the LLM); **evals** assert probabilistic agent *behavior* (real calls, graded by deepeval metrics — tool-use/substring or an LLM judge). You can't unit-test "is the answer good" — that's what evals/judges are for. |
 | **10 — MCP integration** | Speak MCP both ways | **Client:** `mcp_integration/client.py` runs the official filesystem MCP server over stdio and wraps it as the `filesystem` tool (sandboxed to `docs/`), so the agent reads internal docs via MCP. **Server:** `mcp_integration/server.py` exposes `ask_agent`/`get_storage_metrics`/`calculate` over MCP (FastMCP, SSE); `agent mcp-serve` runs it. | MCP is a standard wire protocol for tool/context exchange. As a *client* the agent consumes any MCP server as just another tool; as a *server* the whole agent becomes a tool other MCP clients can call — the same core, now interoperable across the ecosystem. |
 | **11 — Prompt management** | Prompts as managed assets, not string literals | System prompts moved out of `core.py` into `prompts/*.md` loaded by `load_prompt()`; each builder picks its prompt (`single_shot_agent`, `chat_agent`, `research_agent`). The single-shot prompt is also fetched from LangFuse first (`react-agent-prompt`) with the local file as fallback; `agent sync-prompt` pushes the local copy to LangFuse as a new version. | Prompts are product, and they drift: keeping them in files makes them reviewable in diffs, and registering them in LangFuse lets you version and roll them forward without a redeploy. The fallback chain (LangFuse → file) means the agent still runs offline. Mind that prompt wording *is* behavior — a "be concise, answer directly" tweak made the model skip the calculator and broke two evals until reworded. |
-| **12 — Vector-store memory** | Bounded memory via semantic retrieval | `build_chat_agent` defaults to `VectorStoreMemory` (`memory/vector_store.py`): each turn is embedded and stored; `load_memory_variables` returns only the top-k *similar* past turns instead of the whole transcript. `use_buffer_memory=True` keeps the old `ConversationBufferMemory` for comparison; `agent memory-stats` and `evals/memory_comparison.py` quantify the difference (~65% fewer history tokens at 8+ turns). | Buffer memory grows linearly — every turn re-sends the full history, so cost climbs with conversation length. Vector memory trades exactness for a bounded footprint: embed turns, retrieve the few relevant ones. The embedder is the swap point — see the platform note: torch/onnxruntime have no x86_64-mac/py3.13 wheels, so this ships a torch-free `HashingEmbedder` (lexical) instead of sentence-transformers + ChromaDB; swap it in on a native arm64 venv. |
+| **12 — Vector-store memory** | Bounded memory via semantic retrieval | `build_chat_agent` defaults to `VectorStoreMemory` (`memory/vector_store.py`): each turn is embedded and stored; `load_memory_variables` returns only the top-k *similar* past turns instead of the whole transcript. `use_buffer_memory=True` keeps the old `ConversationBufferMemory` for comparison; `agent memory-stats` and `evals/memory_comparison.py` quantify the difference (~65% fewer history tokens at 8+ turns). | Buffer memory grows linearly — every turn re-sends the full history, so cost climbs with conversation length. Vector memory trades exactness for a bounded footprint: embed turns, retrieve the few relevant ones. Backed by sentence-transformers `all-MiniLM-L6-v2` + ChromaDB. (This was first built torch-free on an x86_64-Rosetta venv where torch/onnxruntime have no wheels; the project was then migrated to a native arm64 toolchain — see the platform note — which unblocked the real stack.) |
 
 ## Key concepts being learned
 
@@ -187,12 +189,13 @@ the underlying pattern:
   `langchain.schema`** (broke pytest collection); resolved by using **deepeval 4.x**, which
   needs `click<8.4` — so `click` is pinned `>=8.1,<8.4` to let both resolve. The MCP package
   is named `mcp`, so the integration lives in **`mcp_integration/`** — a `mcp/` directory
-  would shadow the SDK and break `from mcp import ...`. **Platform wheels:** this venv is
-  x86_64 (Rosetta) on an arm64 Mac, and neither `torch` nor `onnxruntime` ships a wheel for
-  macOS-x86_64 + Python 3.13 — so `sentence-transformers` and `chromadb` can't install here.
-  Layer 12 therefore ships a torch-free `HashingEmbedder` + local JSON store instead; the
-  planned follow-up is a native arm64 toolchain, after which they can be swapped in. Call
-  these out rather than silently working around them.
+  would shadow the SDK and break `from mcp import ...`. **Platform / native arm64:** `torch` and
+  `onnxruntime` have no macOS-x86_64 + Python-3.13 wheels, so `sentence-transformers` and
+  `chromadb` can't install under an x86_64 (Rosetta) venv. This project was migrated to a
+  **native arm64 toolchain** (arm64 `uv` at `~/.local/bin/uv` + a uv-managed arm64 Python 3.13;
+  `uv venv --clear --python <arm64-3.13>` then `uv sync`). Consequence: the venv must be
+  arm64-mac (or linux/win) — `uv sync` will fail on x86_64 mac because those wheels don't
+  exist. Call these out rather than silently working around them.
 - **Never commit secrets.** `.env` holds real keys and is git-ignored; don't echo secret
   values or write them into tracked files.
 - **Don't make billed API calls without asking** — running the agent live hits the

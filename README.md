@@ -60,9 +60,13 @@ an `Observation:` and re-prompts — looping until the model emits `Final Answer
 | `pytest` | Unit/integration test runner (`tests/`). |
 | `deepeval` | The eval framework (`evals/`) — `LLMTestCase`, `ToolCorrectnessMetric`, a custom substring metric, and `AnswerRelevancyMetric` judged by Claude. |
 | `mcp` | Model Context Protocol SDK — client (consume the filesystem server) and server (expose the agent as MCP tools). |
-| `numpy` | Vectors + cosine similarity for the vector-store memory. |
+| `numpy` | Numeric support across the ML stack. |
+| `chromadb` | Persistent vector store for conversation memory (`./chroma_db/`). |
+| `sentence-transformers` | Local `all-MiniLM-L6-v2` embeddings (free, no API key) for vector memory. |
 
-Managed with [uv](https://docs.astral.sh/uv/). Requires Python 3.13+.
+Managed with [uv](https://docs.astral.sh/uv/). Requires Python 3.13+ on a native **arm64**
+mac (or linux/win) — `torch`/`onnxruntime` (for the vector-memory stack) have no
+macOS-x86_64 wheels, so an x86_64/Rosetta toolchain won't `uv sync`.
 
 ## Getting started
 
@@ -160,7 +164,7 @@ version. Editing a prompt is a behavior change — re-run `agent test` after.
 | `agent.py` | The Click CLI; `serve` runs the API, `mcp-serve` runs the MCP server, `test` runs the quality gate. |
 | `mcp_integration/` | MCP both ways — `client.py` (filesystem server → `filesystem` tool), `server.py` (agent → MCP tools). Named `mcp_integration` to avoid shadowing the `mcp` SDK. |
 | `prompts/` | System prompts as markdown (`single_shot_agent`, `chat_agent`, `research_agent`, `storage_agent`) + `loader.py`. |
-| `memory/` | `vector_store.py` — `VectorStoreMemory` with top-k semantic retrieval + a torch-free hashing embedder. |
+| `memory/` | `vector_store.py` — `VectorStoreMemory` with top-k semantic retrieval (sentence-transformers embeddings + ChromaDB). |
 | `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
 | `tests/` | pytest suite — tool units + API integration (LLM stubbed). |
 | `evals/` | Real-agent behavioral evals: deterministic cases + LLM-as-judge scoring. |
@@ -186,11 +190,11 @@ Import direction is one-way: `tools`/`hooks` ← `core` ← `agent`/`api`/`mcp_i
   pinned `>=8.1,<8.4`. Metrics judge with Claude via a custom `DeepEvalBaseLLM` (no OpenAI key).
 - **MCP naming:** the integration lives in `mcp_integration/`, not `mcp/` — a top-level `mcp/`
   directory would shadow the installed `mcp` SDK and break `from mcp import ...`.
-- **Vector memory embedder:** on this dev setup (x86_64 Python under Rosetta), neither `torch`
-  nor `onnxruntime` has a macOS-x86_64/Python-3.13 wheel, so `sentence-transformers` and
-  `chromadb` can't install. Layer 12 ships a torch-free `HashingEmbedder` + a local JSON store
-  instead; the embedder/store are isolated swap-in points for sentence-transformers + ChromaDB
-  on a native arm64 toolchain.
+- **Native arm64 required for the ML stack:** `torch` and `onnxruntime` have no
+  macOS-x86_64 + Python-3.13 wheels, so `sentence-transformers` and `chromadb` only install on
+  a native arm64 mac (or linux/win). On Apple Silicon, use an arm64 `uv` + arm64 Python 3.13
+  (not an x86_64/Rosetta toolchain). `uv sync` will fail on x86_64 mac because those wheels
+  don't exist.
 
 This is a learning project, not a production system — the `storage_metrics` tool returns
 synthetic data, and answers depend on live web search.
