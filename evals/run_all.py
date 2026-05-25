@@ -15,6 +15,7 @@ import pytest  # noqa: E402
 from evals.cache import get_cache  # noqa: E402
 from evals.deterministic_evals import run as run_deterministic  # noqa: E402
 from evals.langfuse_evals import run as run_langfuse  # noqa: E402
+from evals.skill_evals import run as run_skill_evals  # noqa: E402
 
 
 class _ResultCollector:
@@ -42,12 +43,16 @@ def main() -> None:
     print("\n========== DETERMINISTIC EVALS ==========")
     det_passed, det_total = run_deterministic()
 
+    print("\n========== SKILL EVALS ==========")
+    skill_passed, skill_total = run_skill_evals()
+
     print("\n========== LANGFUSE EVALS ==========")
     lf_avg = run_langfuse()
 
     print("\n========== SUMMARY ==========")
     print(f"Unit tests: {unit_passed}/{unit_total} passed")
     print(f"Deterministic evals: {det_passed}/{det_total} passed")
+    print(f"Skill evals: {skill_passed}/{skill_total} passed")
     if lf_avg is None:
         print("LangFuse evals: skipped (not configured)")
     else:
