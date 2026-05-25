@@ -34,3 +34,6 @@ dlq/*.json
 
 # Eval response cache (Layer 22) — runtime state
 evals/.cache/
+
+# Local Claude Code state
+.claude/

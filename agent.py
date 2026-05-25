@@ -155,13 +155,29 @@ def metrics(cluster_name: str) -> None:
 @click.argument("topic")
 def skill(topic: str) -> None:
     """Run the research_and_summarize skill on TOPIC and print the report."""
-    from skills.research_and_summarize import research_and_summarize
+    from skills.registry import SkillRegistry
 
     try:
-        report = research_and_summarize.invoke(topic)
+        report = SkillRegistry().auto_discover().get_skill("research_and_summarize").invoke(topic)
     except Exception as exc:  # noqa: BLE001
         raise click.ClickException(str(exc)) from exc
     click.echo(report)
+
+
+@cli.command(name="skills")
+def skills_list() -> None:
+    """List all registered skills, their descriptions, and the tools each uses."""
+    from skills.registry import SkillRegistry
+
+    items = SkillRegistry().auto_discover().list_skills()
+    if not items:
+        click.echo("No skills registered.")
+        return
+    click.echo(f"{len(items)} skill(s) registered:\n")
+    for s in items:
+        click.echo(f"• {s['name']}")
+        click.echo(f"    {' '.join(s['description'].split())}")
+        click.echo(f"    tools used: {', '.join(s['tools_used']) or '(none listed)'}\n")
 
 
 @cli.command(name="sandbox-ask")

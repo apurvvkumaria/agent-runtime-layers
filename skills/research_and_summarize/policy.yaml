@@ -1,0 +1,16 @@
+# Skill-level capability policy (OpenClaw style) for research_and_summarize.
+#
+# Declares what this skill is allowed to touch. It's a capability manifest, not the
+# runtime OpenShell sandbox policy (that schema is filesystem_policy/landlock/
+# process/network_policies — see openshell/policy.yaml); the broker would map this
+# onto a sandbox policy when the skill runs with a ctx.
+network:
+  egress:
+    - allow: api.anthropic.com   # llm_summarize
+    - allow: duckduckgo.com      # web_search
+filesystem:
+  writable: [/sandbox/output]
+resources:
+  cpu_cores: 1
+  memory_mb: 512
+  timeout_seconds: 30

@@ -1,0 +1,14 @@
+# Skill-level capability policy (OpenClaw style) for storage_health_check.
+#
+# Filesystem-only: reads SLA thresholds + queries the (in-process) metrics tool,
+# does a rule-based comparison — no network egress at all. A capability manifest,
+# not the runtime OpenShell sandbox policy (see openshell/policy.yaml).
+network:
+  egress: []                 # no outbound network
+filesystem:
+  readable: [docs/]          # docs/sla_thresholds.md
+  writable: [/sandbox/output]
+resources:
+  cpu_cores: 1
+  memory_mb: 512
+  timeout_seconds: 15
