@@ -1,9 +1,9 @@
 # agent-runtime-layers
 
-![Layers](https://img.shields.io/badge/layers-20-blue)
+![Layers](https://img.shields.io/badge/layers-21-blue)
 
 A small research agent — **Claude, LangChain, LangGraph, and Strands** — built up in
-**twenty deliberate layers**, each adding one agent-runtime capability. The core is a
+**twenty-one deliberate layers**, each adding one agent-runtime capability. The core is a
 ReAct agent; later layers add a LangGraph multi-agent pipeline, and the same pipeline
 rebuilt with Strands, as contrasting paradigms. It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
@@ -18,7 +18,7 @@ queue for failed runs, and a composed skill.
 uv run python agent.py ask "What is a Merkle tree?"
 ```
 
-## The twenty layers
+## The twenty-one layers
 
 The agent was built incrementally; each layer adds one capability on top of the last.
 
@@ -44,6 +44,7 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **18 — Autonomous modes** | Run without a human in the loop | `AgentScheduler` runs a question on a cron schedule (APScheduler), appending timestamped answers to a file; `HeartbeatLoop` polls `tasks.json`, runs pending tasks, and queues agent-suggested follow-ups (self-directing, bounded). CLI: `agent schedule`/`heartbeat`/`add-task`. Both are long-running blocking processes. |
 | **19 — Dead-letter queue** | Failed runs are captured, not lost | `core` records each failed run to a DLQ with a reason, classified transient (retry) vs. permanent (review). `agent dlq-retry` replays transient failures with exponential backoff (promoting exhausted ones to permanent); `dlq-stats`/`dlq-clear` report and review. Failures are also flagged 0 in LangFuse. Same idea as a message-queue DLQ, for agent runs. |
 | **20 — Skills (composed tools)** | One tool that orchestrates several | `research_and_summarize` is a `@tool` that internally runs web search → storage metrics → LLM summarization and returns a structured report (Research Findings / Storage Context / Summary). It's in `get_tools()`, so the agent picks it for "research and summarize" requests; `agent skill "..."` runs it directly. A skill packages a multi-tool workflow behind one tool interface (same pattern as OpenClaw skills). |
+| **21 — Run inside an OpenShell sandbox** ✅ *verified* | The agent executes under a declarative sandbox policy | `agent sandbox-ask "…"` runs the whole agent inside an NVIDIA OpenShell sandbox via one `openshell sandbox create --upload … --no-keep -- … agent.py ask`, then auto-deletes it; `agent sandbox-info` shows gateway/sandboxes/policy. The policy (`openshell/policy.yaml`, real v0.0.47 schema) is **binary-keyed, default-deny** egress — the sandbox's python may reach only `api.anthropic.com` + DuckDuckGo. `openshell/agent-sandbox/` bakes the deps; setup in `openshell/setup.md` + `scripts/`. Verified end-to-end: answers `2 + 2 = 4` from inside the sandbox. The agent as an isolated, policy-constrained workload instead of a host process. |
 
 ## How it works
 
