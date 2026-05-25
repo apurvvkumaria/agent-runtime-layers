@@ -89,9 +89,11 @@ def storage_metrics(cluster_name: str) -> str:
 def get_tools() -> list:
     """The full tool list the agent can choose from.
 
-    Web search + calculator + storage metrics + the MCP-backed filesystem reader
-    (imported lazily so the mcp dependency only loads when an agent is built).
+    Web search + calculator + storage metrics + the MCP-backed filesystem reader +
+    the research_and_summarize skill (composes tools internally). Imported lazily so
+    the mcp/skill dependencies only load when an agent is built.
     """
     from mcp_integration.client import filesystem
+    from skills.research_and_summarize import research_and_summarize
 
-    return [DuckDuckGoSearchRun(), calculator, storage_metrics, filesystem]
+    return [DuckDuckGoSearchRun(), calculator, storage_metrics, filesystem, research_and_summarize]

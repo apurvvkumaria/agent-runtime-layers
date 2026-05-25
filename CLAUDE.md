@@ -17,7 +17,7 @@ That core is a ReAct agent (Claude + LangChain); later layers add a separate Lan
 multi-agent pipeline — and the same pipeline rebuilt with Strands — as contrasting
 paradigms. It can also run autonomously — on a cron schedule or a self-directing heartbeat
 loop, with failed runs captured in a dead-letter queue. Every reasoning step is visible. It
-was built up in nineteen deliberate layers (see below), each adding one runtime capability.
+was built up in twenty deliberate layers (see below), each adding one runtime capability.
 
 ## How to run it
 
@@ -30,6 +30,7 @@ uv run python agent.py ask "What is X?"    # one question, one answer
 uv run python agent.py research "topic" -o report.md   # research → markdown file
 uv run python agent.py calc "150 * 223.48"             # direct calculator, no LLM
 uv run python agent.py metrics prod-us-east-1          # direct metrics, no LLM
+uv run python agent.py skill "..."         # run the research_and_summarize skill
 uv run python agent.py history             # last 10 turns from saved memory
 uv run python agent.py serve --port 8000   # start the FastAPI REST server
 uv run python agent.py mcp-serve --port 3000  # start the MCP server (SSE)
@@ -126,6 +127,7 @@ Nothing imports `agent`.
 | `strands_agent/` | `agent.py` — the same pipeline via Strands: a research + a calculator specialist agent exposed to an orchestrator through `Agent.as_tool()`; the model decides routing (no explicit graph). Driven by `agent pipeline --framework strands` and `agent compare`. |
 | `autonomy/` | `scheduler.py` — `AgentScheduler` (cron via APScheduler) and `HeartbeatLoop` (polls `tasks.json`, runs pending tasks, self-directs follow-ups). Driven by `agent schedule` / `heartbeat` / `add-task`. State in `tasks.json` (git-ignored). |
 | `dlq/` | `manager.py` — `DLQManager`: records failed runs, classifies them transient/permanent, retries transient ones with exponential backoff, and reports stats. State in `dlq/*.json` (git-ignored). `core.stream_answer` records failures here. |
+| `skills/` | `research_and_summarize.py` — a `@tool` that composes search + storage metrics + LLM summarization into one report. Added to `get_tools()`, so the agent calls it like any tool; `agent skill "..."` runs it directly. |
 | `api.py` | FastAPI app with async endpoints — `POST /ask`, `POST /chat` (per-session in-memory agents), `GET /metrics/{cluster}`, `GET /calc?expr=`, `GET /health` — plus CORS. Imports `core`. |
 | `agent.py` | The Click CLI only: `chat`, `ask`, `research`, `calc`, `metrics`, `history`, `serve`, `test`. The REPL (`converse`) lives here. Imports `core` + `api`. |
 | `tests/` | pytest suite — `test_tools.py` (unit), `test_api.py` (FastAPI TestClient integration, LLM stubbed), `conftest.py` (fixtures: `client`, `stub_llm`). No real API calls. |
@@ -138,7 +140,7 @@ Nothing imports `agent`.
 | `main.py` | The uv-generated stub. Not used by the agent; safe to ignore or repurpose. |
 | `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
 
-## The nineteen layers
+## The twenty layers
 
 The agent was built incrementally, each layer adding one agent-runtime capability on top of
 the last. They all live in the current `agent.py`; this is the conceptual progression, not
@@ -165,6 +167,7 @@ separate files.
 | **17 — Streaming the pipeline** | Live node progress + token-by-token answer | `stream_pipeline()` uses LangGraph multi-mode streaming (`astream(stream_mode=["updates","messages"])`): "updates" reports each node as it completes (and accumulates final state), while "messages" streams the **writer** node's LLM tokens (filtered by `langgraph_node`) as they generate. `agent pipeline` (langgraph) now streams the answer live instead of printing it whole. | Layer 4 streamed the single ReAct loop; this streams a *multi-agent graph* — you watch the topology execute (which nodes fired, in order) and the final answer materialize token-by-token. The trick is filtering token events to just the answer-producing node so the calculator's LLM chatter doesn't leak into the output. |
 | **18 — Autonomous modes** | Run without a human in the loop | `autonomy/scheduler.py`: `AgentScheduler` runs a question on a cron schedule (APScheduler), appending timestamped answers to a file — once immediately to verify, then on schedule. `HeartbeatLoop` polls `tasks.json` every N seconds, runs pending tasks, marks them complete, and queues one agent-suggested follow-up per user task (self-directing, bounded so auto-tasks can't chain). CLI: `schedule` / `heartbeat` / `add-task`. | Up to now every run was human-triggered; this lets the agent run on a clock or off a task queue it can extend itself. Both are long-running blocking processes (like `serve`). The bound on self-direction matters — an agent that can add its own work needs a hard stop, or it runs away. |
 | **19 — Dead-letter queue** | Failed runs are captured, not lost | `dlq/manager.py`: `core.stream_answer` wraps each run; on failure it records to the DLQ with a reason, **classifies** it transient (tool_timeout / api_error_5xx / sandbox_crash) vs. permanent (budget_exceeded / api_error_4xx / max_retries_exceeded), and flags the run 0 in LangFuse. `dlq-retry` replays transient failures with exponential backoff (1s/2s/4s), promoting exhausted ones to permanent; `dlq-stats` / `dlq-clear` report and review. | Autonomous agents fail unattended — without a DLQ those failures vanish. The transient/permanent split decides what to auto-retry vs. surface for a human, and bounded backoff stops a flaky dependency from being hammered. The same idea as a message-queue DLQ, applied to agent runs. |
+| **20 — Skills (composed tools)** | One tool that orchestrates several | `skills/research_and_summarize.py` is a `@tool` that internally runs web search → storage metrics → LLM summarization and returns a structured `## Research Findings` / `## Storage Context` / `## Summary` report. It's in `get_tools()`, so the ReAct agent picks it for "research and summarize" requests, and `agent skill "..."` runs it directly. | A *tool* does one thing; a *skill* packages a fixed multi-tool workflow behind a single tool interface. The agent makes one call and the skill handles the orchestration — encapsulation, vs. the agent (or a LangGraph graph) wiring the steps itself. Same pattern as OpenClaw skills. |
 
 ## Key concepts being learned
 

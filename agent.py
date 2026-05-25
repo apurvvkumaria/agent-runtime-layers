@@ -152,6 +152,19 @@ def metrics(cluster_name: str) -> None:
 
 
 @cli.command()
+@click.argument("topic")
+def skill(topic: str) -> None:
+    """Run the research_and_summarize skill on TOPIC and print the report."""
+    from skills.research_and_summarize import research_and_summarize
+
+    try:
+        report = research_and_summarize.invoke(topic)
+    except Exception as exc:  # noqa: BLE001
+        raise click.ClickException(str(exc)) from exc
+    click.echo(report)
+
+
+@cli.command()
 def history() -> None:
     """Show the last 10 conversation turns from saved memory."""
     turns = load_recent_turns(10)
