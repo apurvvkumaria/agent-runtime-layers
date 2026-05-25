@@ -327,6 +327,35 @@ have shipped plausible-but-wrong assumptions):
 - **`exec` runs with a sanitized env** that drops the image's Dockerfile `ENV`, so anything the
   agent needs (e.g. `TIKTOKEN_CACHE_DIR`) is exported in the run command.
 
+### Isolation overhead (measured)
+
+What does enforcing the policy actually cost? Rough p50 from a few runs of `"What is 2 + 2?"`
+(Claude Sonnet), comparing the agent on the host vs. inside the sandbox:
+
+| Measurement | p50 | What it captures |
+|---|---|---|
+| Host `ask` (no OpenShell) | 10.83 s | agent on bare host (incl. ~8 s of heavy imports + LLM) |
+| OpenShell `sandbox-ask`, end-to-end | 16.23 s | create + upload + run + teardown |
+| Warm in-sandbox exec (kept sandbox) | 9.27 s | repeated `exec`, no provisioning |
+| **One-time provisioning** (≈ e2e − warm) | **~7.0 s** | container create + upload + supervisor boot + teardown |
+| Per-LLM-call latency, **direct** | 1.68 s | Anthropic round trip on the host |
+| Per-LLM-call latency, **via egress proxy** | 1.67 s | same round trip, *through* the policy proxy |
+
+**Takeaway: enforcement is essentially free per-request.** The Anthropic round trip through
+OpenShell's egress proxy (1.67 s) is indistinguishable from a direct call (1.68 s) — the OPA
+host check + proxy hop add ~0 to the request path, and Landlock adds nothing measurable to the
+agent's in-sandbox work. **The entire isolation tax is one-time provisioning (~7 s)** —
+container create, source upload, supervisor boot, teardown — which is amortizable by pooling /
+reusing warm sandboxes (the warm number is ≤ host). So the latency optimization target is
+**cold-start provisioning, not the enforcement datapath**.
+
+> Caveats (kept so the numbers stay honest): small N (3–5); wall time is dominated by ~8 s of
+> heavy Python imports (torch/chromadb) + ~3.3 s of LLM calls, so policy is a small slice
+> either way; and the warm-vs-host comparison has a confound — the host path goes through
+> `uv run` (env resolution) while the in-sandbox path runs `python` directly, so read it as
+> "per-request overhead within noise," not "the sandbox is faster." The clean same-method
+> signal is the per-LLM-call latency (1.67 vs 1.68 s).
+
 ## Project structure
 
 | File | What it does |
