@@ -234,6 +234,11 @@ def memory_stats() -> None:
     click.echo(f"Total turns stored: {s['turns']}")
     click.echo(f"Embedding: {s['embedder']} (dim {s['embedding_dim']})")
     if s["turns"]:
+        t = s["tiers"]
+        click.echo(
+            f"Decay tiers: {t['full']} full, {t['summary']} summary, "
+            f"{t['marker']} marker (archived turns are deleted)"
+        )
         click.echo(
             f"Estimated tokens per turn — buffer (all {s['turns']} turns): "
             f"{s['buffer_tokens']}, vector (top-{mem.k}): {s['vector_tokens']}"
@@ -372,6 +377,18 @@ def memory_clear(yes: bool) -> None:
         click.confirm(f"Delete all {turns} stored turn(s) from {mem.store_dir}?", abort=True)
     mem.clear()
     click.echo(f"Cleared {turns} turn(s) from the vector store.")
+
+
+@cli.command(name="memory-decay")
+def memory_decay() -> None:
+    """Age out stored turns by tier (full -> summary -> marker -> archived)."""
+    from memory.vector_store import VectorStoreMemory
+
+    counts = VectorStoreMemory().decay_memory()
+    click.echo(
+        f"{counts['full']} full, {counts['summary']} summary, "
+        f"{counts['marker']} marker, {counts['archived']} archived"
+    )
 
 
 if __name__ == "__main__":

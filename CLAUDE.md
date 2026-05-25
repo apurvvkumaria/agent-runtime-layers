@@ -15,7 +15,7 @@ token-by-token, loads its system prompts from files (or LangFuse), manages its t
 and pulls in docs via RAG, and emits both print-based hooks and structured LangFuse traces.
 That core is a ReAct agent (Claude + LangChain); later layers add a separate LangGraph
 multi-agent pipeline — and the same pipeline rebuilt with Strands — as contrasting
-paradigms. Every reasoning step is visible. It was built up in fifteen deliberate layers
+paradigms. Every reasoning step is visible. It was built up in sixteen deliberate layers
 (see below), each adding one runtime capability.
 
 ## How to run it
@@ -35,6 +35,7 @@ uv run python agent.py mcp-serve --port 3000  # start the MCP server (SSE)
 uv run python agent.py sync-prompt         # push local single-shot prompt to LangFuse
 uv run python agent.py memory-stats        # vector-store turns + estimated token savings
 uv run python agent.py memory-clear        # wipe all stored turns (--yes to skip prompt)
+uv run python agent.py memory-decay        # age out stored turns by tier
 uv run python agent.py pipeline "..."      # multi-agent pipeline (--framework langgraph|strands|both)
 uv run python agent.py compare "..."       # run both frameworks side by side
 uv run python agent.py context-stats "..." # token budget + RAG docs for a question
@@ -110,7 +111,7 @@ Nothing imports `agent`.
 | `hooks.py` | Observability. `StepLogger` (print-based `on_tool_*`/`on_llm_*` callbacks) and the LangFuse handler setup. Exports `get_callbacks()` (print hooks + LangFuse when configured; LangFuse handler cached per process) and `flush_traces()`. |
 | `core.py` | The agent runtime, framework-agnostic. `build_memory()`, the two builders — `build_chat_agent()` (memory) and `build_single_shot_agent()` (none), prompt selection (`_react_prompt` — LangFuse-first then local file), `new_session_id()`, the `stream_answer()` streaming loop, and `load_recent_turns()`. Imports `tools` + `hooks` + `prompts.loader`. |
 | `prompts/` | The prompt library: `single_shot_agent.md`, `chat_agent.md`, `research_agent.md`, `storage_agent.md` (each a full ReAct template), plus `loader.py` (`load_prompt(name, **kwargs)`). |
-| `memory/` | `vector_store.py` — `VectorStoreMemory` (BaseMemory) with top-k semantic retrieval, embeddings from sentence-transformers `all-MiniLM-L6-v2`, persisted in a ChromaDB `PersistentClient` under `./chroma_db/`. |
+| `memory/` | `vector_store.py` — `VectorStoreMemory` (BaseMemory) with top-k semantic retrieval, embeddings from sentence-transformers `all-MiniLM-L6-v2`, persisted in a ChromaDB `PersistentClient` under `./chroma_db/`. Includes age-based **decay** (`decay_memory()`): turns downgrade full → summary → marker → archived as they age. |
 | `langgraph_agents/` | `pipeline.py` — a LangGraph `StateGraph` of five agent nodes (orchestrator → research/calculator → writer → reviewer) with a quality-gated retry loop. Separate from the ReAct `core`; driven by `agent pipeline`. |
 | `context/` | `manager.py` — `ContextManager` (tiktoken token counts + per-source budgeting/truncation + budget report); `rag.py` — RAG over `docs/` (ChromaDB "docs" collection + sentence-transformers), auto-injected for storage/latency questions. |
 | `strands_agent/` | `agent.py` — the same pipeline via Strands: a research + a calculator specialist agent exposed to an orchestrator through `Agent.as_tool()`; the model decides routing (no explicit graph). Driven by `agent pipeline --framework strands` and `agent compare`. |
@@ -126,7 +127,7 @@ Nothing imports `agent`.
 | `main.py` | The uv-generated stub. Not used by the agent; safe to ignore or repurpose. |
 | `pyproject.toml` / `uv.lock` | Dependencies, managed by uv. |
 
-## The fifteen layers
+## The sixteen layers
 
 The agent was built incrementally, each layer adding one agent-runtime capability on top of
 the last. They all live in the current `agent.py`; this is the conceptual progression, not
@@ -149,6 +150,7 @@ separate files.
 | **13 — Multi-agent (LangGraph)** | A graph of cooperating agents | `langgraph_agents/pipeline.py`: a `StateGraph` over `ResearchState` with five nodes — orchestrator (routes by question: research/calculate/both), research (DuckDuckGo), calculator (LLM derives an expression → calculator tool), writer (drafts), reviewer (scores 0-1 by an additive rubric). Conditional edges branch on the route and loop reviewer→research while `quality < 0.7 and retry_count < 2`. `agent pipeline "..."` streams each node. | This is a different control structure from the ReAct loop: instead of one LLM choosing tools turn-by-turn, the *graph* fixes the topology and each node is a focused agent. You trade the ReAct loop's flexibility for explicit, inspectable routing and a built-in quality gate / retry — easier to reason about and to bound. |
 | **14 — Context management** | Budget the window; ground in docs | `context/manager.py` allocates a token budget across sources (system prompt / history / retrieved / tool results / question / response reserve), counts with tiktoken, truncates each to its share, and reports usage. `context/rag.py` indexes `docs/` into a ChromaDB "docs" collection and retrieves relevant chunks; `stream_answer` auto-injects them for storage/latency questions and prints the budget report when verbose. `agent context-stats "..."` previews the allocation; `evals/rag_comparison.py` shows token cost vs. answer quality. | The context window is a scarce, fixed budget — left unmanaged, history and retrieved text crowd out the question and the response. Explicit per-source budgeting makes the tradeoffs visible and bounded; RAG injects *just* the relevant docs (grounding the model on facts it otherwise can't know) at a measurable token cost. |
 | **15 — Strands + framework comparison** | The same pipeline, model-driven | `strands_agent/agent.py` rebuilds the research pipeline with Strands Agents: research + calculator specialists exposed to an orchestrator via `Agent.as_tool()`, with *no* explicit graph — the model decides routing. `agent pipeline --framework {langgraph,strands,both}` runs either; `agent compare "..."` runs both and tabulates nodes/steps, total tokens, time, and quality. | Two ways to coordinate agents: a **fixed graph** (LangGraph — explicit topology, cheap, predictable) vs. **emergent, model-driven** orchestration (Strands — flexible, less code, but more LLM round-trips). The comparison makes the tradeoff concrete: on the test question both scored 1.0, but LangGraph used ~12× fewer tokens and ~5× less time. |
+| **16 — Memory decay** | Old context compresses, then expires | Extends `VectorStoreMemory`: each turn carries a tier that downgrades with age — `full` (<3d, verbatim) → `summary` (3-30d, one-sentence LLM summary) → `marker` (30-90d, `[Topic: … discussed on …]`) → `archived` (>90d, deleted). `decay_memory()` runs on init and via `agent memory-decay`; `load_memory_variables` renders each tier; `memory-stats` shows the breakdown. | Not all history deserves equal space forever. Decay mirrors human memory — recent turns stay sharp, older ones blur to a gist, then a tag, then drop — keeping the retrievable store bounded and cheap without a hard cutoff. |
 
 ## Key concepts being learned
 

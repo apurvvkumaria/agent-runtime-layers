@@ -1,22 +1,22 @@
 # agent-runtime-layers
 
-![Layers](https://img.shields.io/badge/layers-15-blue)
+![Layers](https://img.shields.io/badge/layers-16-blue)
 
 A small research agent — **Claude, LangChain, LangGraph, and Strands** — built up in
-**fifteen deliberate layers**, each adding one agent-runtime capability. The core is a
+**sixteen deliberate layers**, each adding one agent-runtime capability. The core is a
 ReAct agent; later layers add a LangGraph multi-agent pipeline, and the same pipeline
 rebuilt with Strands, as contrasting paradigms. It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
 calling, memory, streaming, lifecycle hooks, production tracing, a CLI, a REST API,
 tests + evals, MCP (Model Context Protocol) in both directions, file/LangFuse-based
 prompt management, vector-store memory, a LangGraph multi-agent pipeline, token-budget
-context management with RAG, and a LangGraph-vs-Strands comparison.
+context management with RAG, a LangGraph-vs-Strands comparison, and age-based memory decay.
 
 ```bash
 uv run python agent.py ask "What is a Merkle tree?"
 ```
 
-## The fifteen layers
+## The sixteen layers
 
 The agent was built incrementally; each layer adds one capability on top of the last.
 
@@ -37,6 +37,7 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **13 — Multi-agent (LangGraph)** | A graph of cooperating agents | A `StateGraph` of five agent nodes — orchestrator (routes research/calculate/both), research, calculator, writer, reviewer — with conditional edges and a reviewer→research retry loop gated on a quality score. `agent pipeline "..."` streams each node. A fixed, inspectable topology vs. the ReAct loop's per-turn tool choice. |
 | **14 — Context management** | Budget the window; ground in docs | A `ContextManager` (tiktoken) allocates a token budget across sources and truncates each to its share; RAG over `docs/` (ChromaDB + sentence-transformers) is auto-injected for storage/latency questions. `agent context-stats "..."` previews the allocation; `evals/rag_comparison.py` shows token cost vs. answer quality (with vs. without RAG). |
 | **15 — Strands + framework comparison** | The same pipeline, model-driven | The research pipeline rebuilt with Strands Agents — research + calculator specialists exposed to an orchestrator via `Agent.as_tool()`, with *no* explicit graph (the model decides routing). `agent pipeline --framework {langgraph,strands,both}` runs either; `agent compare "..."` tabulates nodes/steps, tokens, time, and quality. Fixed graph (cheap, predictable) vs. emergent model-driven orchestration (flexible, more LLM round-trips). |
+| **16 — Memory decay** | Old context compresses, then expires | Each stored turn carries a tier that downgrades with age: `full` (<3d, verbatim) → `summary` (3-30d, one-sentence LLM summary) → `marker` (30-90d, topic tag) → `archived` (>90d, deleted). `agent memory-decay` ages turns out; `memory-stats` shows the breakdown. Keeps the retrievable store bounded without a hard cutoff — recent stays sharp, old blurs to a gist, then drops. |
 
 ## How it works
 
@@ -111,6 +112,7 @@ uv run python agent.py mcp-serve --port 3000  # start the MCP server (SSE)
 uv run python agent.py sync-prompt         # push local single-shot prompt to LangFuse
 uv run python agent.py memory-stats        # vector-store turns + estimated token savings
 uv run python agent.py memory-clear        # wipe all stored turns (use --yes to skip prompt)
+uv run python agent.py memory-decay        # age out stored turns by tier
 uv run python agent.py pipeline "..."      # multi-agent pipeline (--framework langgraph|strands|both)
 uv run python agent.py compare "..."       # run LangGraph vs Strands side by side
 uv run python agent.py context-stats "..." # token budget + RAG docs for a question
@@ -179,7 +181,7 @@ version. Editing a prompt is a behavior change — re-run `agent test` after.
 | `agent.py` | The Click CLI; `serve` runs the API, `mcp-serve` runs the MCP server, `test` runs the quality gate. |
 | `mcp_integration/` | MCP both ways — `client.py` (filesystem server → `filesystem` tool), `server.py` (agent → MCP tools). Named `mcp_integration` to avoid shadowing the `mcp` SDK. |
 | `prompts/` | System prompts as markdown (`single_shot_agent`, `chat_agent`, `research_agent`, `storage_agent`) + `loader.py`. |
-| `memory/` | `vector_store.py` — `VectorStoreMemory` with top-k semantic retrieval (sentence-transformers embeddings + ChromaDB). |
+| `memory/` | `vector_store.py` — `VectorStoreMemory` with top-k semantic retrieval (sentence-transformers + ChromaDB) and age-based decay tiers. |
 | `langgraph_agents/` | `pipeline.py` — a LangGraph `StateGraph` of five agent nodes with a quality-gated retry loop (`agent pipeline`). |
 | `strands_agent/` | `agent.py` — the same pipeline via Strands (agents-as-tools, model-driven routing). |
 | `context/` | `manager.py` (tiktoken token budgeting) + `rag.py` (RAG over `docs/` via ChromaDB). |

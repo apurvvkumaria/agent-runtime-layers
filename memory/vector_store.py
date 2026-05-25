@@ -11,8 +11,11 @@ nearest-neighbor search, with embeddings from sentence-transformers `all-MiniLM-
 can be replaced with any object exposing `.embed(text) -> list[float]`.
 """
 
+import os
+import re
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import chromadb
@@ -24,6 +27,21 @@ from sentence_transformers import SentenceTransformer
 DEFAULT_STORE_DIR = "./chroma_db"
 _MODEL_NAME = "all-MiniLM-L6-v2"
 _MODEL_DIM = 384  # all-MiniLM-L6-v2 embedding size (known; avoids loading just for stats)
+
+# Memory decay: a turn's tier downgrades as it ages, so old context is compressed
+# (and eventually dropped) rather than kept verbatim forever.
+TIERS = ("full", "summary", "marker", "archived")
+_AGE_DAYS = {"summary": 3, "marker": 30, "archived": 90}  # lower bound (days) per tier
+
+
+def _tier_for_age(age_days: float) -> str:
+    if age_days < _AGE_DAYS["summary"]:
+        return "full"
+    if age_days < _AGE_DAYS["marker"]:
+        return "summary"
+    if age_days < _AGE_DAYS["archived"]:
+        return "marker"
+    return "archived"
 
 
 class SentenceTransformerEmbedder:
@@ -72,6 +90,12 @@ class VectorStoreMemory(BaseMemory):
             settings=Settings(anonymized_telemetry=False),
         )
         self._collection = self._open_collection()
+        # Age out old turns on startup. Idempotent and cheap when nothing has
+        # crossed a tier boundary; guarded so a failure never breaks construction.
+        try:
+            self.decay_memory()
+        except Exception:
+            pass
 
     def _open_collection(self):
         # cosine space pairs with our L2-normalized embeddings.
@@ -99,8 +123,22 @@ class VectorStoreMemory(BaseMemory):
         metas = result["metadatas"][0]
         # Present retrieved turns in chronological order so they read naturally.
         metas.sort(key=lambda m: m.get("ts", 0))
-        history = "\n".join(f"Human: {m['input']}\nAI: {m['output']}" for m in metas)
-        return {self.memory_key: history}
+        lines = [self._render(m) for m in metas]
+        return {self.memory_key: "\n".join(line for line in lines if line)}
+
+    @staticmethod
+    def _render(meta: dict) -> str:
+        """Format a retrieved turn according to its decay tier."""
+        tier = meta.get("tier", "full")
+        if tier == "summary":
+            return f"(summary) {meta.get('summary') or meta.get('input', '')}"
+        if tier == "marker":
+            day = datetime.fromtimestamp(meta.get("ts", 0)).strftime("%Y-%m-%d")
+            topic = meta.get("topic") or (meta.get("input", "")[:40])
+            return f"[Topic: {topic} discussed on {day}]"
+        if tier == "archived":
+            return ""  # archived turns are deleted, but exclude defensively
+        return f"Human: {meta.get('input', '')}\nAI: {meta.get('output', '')}"
 
     def save_context(self, inputs: dict, outputs: dict) -> None:
         """Embed and store one conversation turn."""
@@ -110,7 +148,7 @@ class VectorStoreMemory(BaseMemory):
             ids=[uuid.uuid4().hex],
             embeddings=[self._embedder.embed(f"{question}\n{answer}")],
             documents=[f"{question}\n{answer}"],
-            metadatas=[{"input": question, "output": answer, "ts": time.time()}],
+            metadatas=[{"input": question, "output": answer, "ts": time.time(), "tier": "full"}],
         )
 
     def clear(self) -> None:
@@ -118,11 +156,76 @@ class VectorStoreMemory(BaseMemory):
         self._client.delete_collection(self.collection_name)
         self._collection = self._open_collection()
 
+    # --- decay ---------------------------------------------------------------
+    def _summarize(self, question: str, answer: str) -> str:
+        """One-sentence summary of a turn (LLM, with a heuristic fallback)."""
+        try:
+            from langchain_anthropic import ChatAnthropic
+
+            if not os.environ.get("ANTHROPIC_API_KEY"):
+                raise RuntimeError("no API key")
+            llm = ChatAnthropic(model="claude-sonnet-4-6", temperature=0)
+            prompt = (
+                "Summarize this exchange in ONE short sentence.\n"
+                f"User: {question}\nAssistant: {answer}\nSummary:"
+            )
+            content = llm.invoke(prompt).content
+            text = content if isinstance(content, str) else "".join(
+                b.get("text", "") for b in content if isinstance(b, dict)
+            )
+            return text.strip().splitlines()[0]
+        except Exception:
+            base = f"{question} -> {answer}"
+            return base[:120] + ("…" if len(base) > 120 else "")
+
+    @staticmethod
+    def _topic(text: str) -> str:
+        """A short topic tag from text (a few salient words)."""
+        stop = {"the", "and", "what", "that", "with", "this", "your", "from", "have",
+                "about", "into", "does", "would", "much", "there"}
+        words = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", text)
+                 if w.lower() not in stop]
+        return " ".join(words[:5]) if words else text[:40]
+
+    def decay_memory(self) -> dict:
+        """Downgrade each stored turn's tier by age; return the resulting counts.
+
+        full -> summary (LLM summary), summary -> marker (topic tag), marker ->
+        archived (deleted). A turn jumps straight to its age-appropriate tier,
+        performing whatever transforms that requires. Idempotent.
+        """
+        now = time.time()
+        stored = self._collection.get()
+        counts = {tier: 0 for tier in TIERS}
+        to_delete: list[str] = []
+        for cid, meta in zip(stored["ids"], stored["metadatas"]):
+            target = _tier_for_age((now - meta.get("ts", now)) / 86400)
+            counts[target] += 1
+            if target == "archived":
+                to_delete.append(cid)
+                continue
+            if target == meta.get("tier", "full"):
+                continue  # already at the right tier
+            meta = dict(meta)
+            meta["tier"] = target
+            if target in ("summary", "marker") and not meta.get("summary"):
+                meta["summary"] = self._summarize(meta.get("input", ""), meta.get("output", ""))
+            if target == "marker" and not meta.get("topic"):
+                meta["topic"] = self._topic(meta.get("summary") or meta.get("input", ""))
+            self._collection.update(ids=[cid], metadatas=[meta])
+        if to_delete:
+            self._collection.delete(ids=to_delete)
+        return counts
+
     # --- stats ---------------------------------------------------------------
     def stats(self) -> dict:
         """Counts and an estimate of tokens saved vs. replaying the full buffer."""
         turns = self._collection.count()
-        docs = self._collection.get().get("documents", []) if turns else []
+        stored = self._collection.get() if turns else {"documents": [], "metadatas": []}
+        docs = stored.get("documents", [])
+        tier_counts = {tier: 0 for tier in TIERS}
+        for meta in stored.get("metadatas", []):
+            tier_counts[meta.get("tier", "full")] = tier_counts.get(meta.get("tier", "full"), 0) + 1
         chars = sum(len(d) for d in docs)
         per_turn_tokens = (chars // 4 // turns) if turns else 0  # ~4 chars/token
         buffer_tokens = turns * per_turn_tokens               # buffer sends everything
@@ -140,4 +243,5 @@ class VectorStoreMemory(BaseMemory):
             "vector_tokens": vector_tokens,
             "estimated_savings": saved,
             "savings_pct": pct,
+            "tiers": tier_counts,
         }
