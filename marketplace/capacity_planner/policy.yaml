@@ -1,0 +1,14 @@
+# Skill-level capability policy for capacity_planner (marketplace skill, Layer 28).
+#
+# Union of its dependencies' needs: error_budget needs nothing; storage_health_check
+# reads the SLA doc. So filesystem-only, no network. A capability manifest, not the
+# runtime OpenShell sandbox policy (see openshell/policy.yaml).
+network:
+  egress: []
+filesystem:
+  readable: [docs/]
+  writable: [/sandbox/output]
+resources:
+  cpu_cores: 1
+  memory_mb: 512
+  timeout_seconds: 20

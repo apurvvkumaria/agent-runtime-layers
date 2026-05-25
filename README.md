@@ -1,9 +1,9 @@
 # agent-runtime-layers
 
-![Layers](https://img.shields.io/badge/layers-27-blue)
+![Layers](https://img.shields.io/badge/layers-28-blue)
 
 A small research agent — **Claude, LangChain, LangGraph, and Strands** — built up in
-**twenty-seven deliberate layers**, each adding one agent-runtime capability. The core is a
+**twenty-eight deliberate layers**, each adding one agent-runtime capability. The core is a
 ReAct agent; later layers add a LangGraph multi-agent pipeline, and the same pipeline
 rebuilt with Strands, as contrasting paradigms. It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
@@ -21,7 +21,7 @@ OpenClaw shape (`SKILL.md` + `SkillContext` + `ctx.call_tool`).
 uv run python agent.py ask "What is a Merkle tree?"
 ```
 
-## The twenty-seven layers
+## The twenty-eight layers
 
 The agent was built incrementally; each layer adds one capability on top of the last.
 
@@ -54,12 +54,13 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **25 — Skill versioning & deprecation** | Skills carry a version and can be retired gracefully | Each `SKILL.md` declares `## Version` (semver) + `## Status`; a deprecated skill adds a `## Deprecation` block (replacement + sunset date). `SkillRegistry` tags deprecated skills `[DEPRECATED]`, warns on invocation, and **excludes them from the agent's tool list** (`get_tools()`) while keeping them resolvable via `get_skill()` for backward-compatible callers. `agent skills` shows version + status. Demonstrated by `storage_sla_report v0.9.0` (→ `storage_health_check`, remove after 2026-09-30), which delegates to its replacement. Skills are an API surface, so they get API lifecycle. Verified: 3 skills (2 active); the agent sees only the active ones; the deprecated one warns and still works. |
 | **26 — Skill composition (skills calling skills)** | A skill orchestrates *other skills* | `SkillContext.call_skill(name, arg)` (alongside `call_tool`) resolves a sub-skill via the registry and runs it with a **depth-incremented child context**, so skills-calling-skills is bounded by `max_depth`. New composite skill `cluster_briefing` composes `storage_health_check` + `research_and_summarize` into one briefing (the `ctx` path uses `ctx.call_skill`; the direct path calls the functions); its policy is the union of its parts'. Layers 20/23 composed *tools*; this composes *skills* — they nest like functions, with a depth guard against runaway recursion. Verified: `cluster_briefing("prod-us-east-1")` returns a Health section + a Background section — both sub-skills ran. |
 | **27 — Skill marketplace / remote loading** | Discover, verify, and install skills from a registry | `SkillMarketplace` reads a registry (`marketplace/index.json`) that **pins a SHA256** over each skill package; `install()` recomputes the hash and **refuses on mismatch** before copying the verified package into `skills/` (then `SkillRegistry` loads it). The source is local by default but configurable, so an `http(s)://` registry slots in with the same fetch→verify→install contract. `agent marketplace` / `agent marketplace-install <name>`. Remote skill loading is an arbitrary-code-execution / supply-chain surface, so it's integrity-first (verify *before* install): provenance via the hash, containment via the Layer 21 sandbox. Verified: install verifies + loads `error_budget`; a one-byte tamper makes install refuse. |
+| **28 — Skill dependency resolution** | Installing a skill pulls in its dependencies, in order | Skills declare `## Requires` (other skills + optional semver constraints). `SkillResolver` walks the graph for a marketplace target and returns the install order (deps first), partitioning each into *already satisfied* (installed, via the registry) vs *to install* (from the marketplace), and raising on a missing/unsatisfiable dep or a cycle. `marketplace-install` resolves then installs each in order (still hash-verified); `agent skill-deps <name>` shows the graph. New skill `capacity_planner` requires `error_budget` + `storage_health_check`. A skill registry is a package ecosystem, so it gets a package manager's job — graph, constraints, topological order, cycle detection — across two satisfaction sources (installed core vs. marketplace). Verified: order `error_budget → capacity_planner`, then the composite runs. |
 
 ## Architecture
 
 The runtime data flow: every front door — the Click **CLI**, the FastAPI **REST API**,
 and the **MCP** server — runs over one shared ReAct **core**, which orchestrates tools,
-memory, hooks, and context/RAG around the Claude LLM. The twenty-seven layers stack on top
+memory, hooks, and context/RAG around the Claude LLM. The twenty-eight layers stack on top
 of this spine.
 
 ![Agent runtime architecture: CLI/API/MCP → core → tools/memory/hooks/context → Claude](assets/agent_runtime_layers_architecture.svg)
@@ -380,8 +381,8 @@ reusing warm sandboxes (the warm number is ≤ host). So the latency optimizatio
 | `strands_agent/` | `agent.py` — the same pipeline via Strands (agents-as-tools, model-driven routing). |
 | `autonomy/` | `scheduler.py` — cron `AgentScheduler` + task-driven `HeartbeatLoop` (`agent schedule`/`heartbeat`/`add-task`). |
 | `dlq/` | `manager.py` — `DLQManager`: capture/classify/retry failed runs (`agent dlq-stats`/`dlq-retry`/`dlq-clear`). |
-| `skills/` | OpenClaw-pattern skills (Layer 23): each `skills/<name>/` has `SKILL.md` + `skill.py` (`async def <name>(arg, ctx=None)`) + `policy.yaml`; `context.py` (`SkillContext`) and `registry.py` (`SkillRegistry`) discover them and expose each as a tool. `SkillContext` carries `call_tool` + `call_skill` (Layer 26 composition). Each `SKILL.md` carries `## Version` + `## Status` (Layer 25); the registry warns on deprecated skills and hides them from `get_tools()`. Skills: `research_and_summarize`, `storage_health_check`, `cluster_briefing` (composes the prior two), and the deprecated `storage_sla_report` (`agent skills` / `agent skill`). `marketplace.py` verifies + installs skills from the `marketplace/` registry (Layer 27). |
-| `marketplace/` | Skill marketplace / "remote" registry (Layer 27): `index.json` pins a SHA256 over each installable skill (`error_budget`); `agent marketplace-install` verifies the hash, then installs into `skills/`. |
+| `skills/` | OpenClaw-pattern skills (Layer 23): each `skills/<name>/` has `SKILL.md` + `skill.py` (`async def <name>(arg, ctx=None)`) + `policy.yaml`; `context.py` (`SkillContext`) and `registry.py` (`SkillRegistry`) discover them and expose each as a tool. `SkillContext` carries `call_tool` + `call_skill` (Layer 26 composition). Each `SKILL.md` carries `## Version` + `## Status` (Layer 25); the registry warns on deprecated skills and hides them from `get_tools()`. Skills: `research_and_summarize`, `storage_health_check`, `cluster_briefing` (composes the prior two), and the deprecated `storage_sla_report` (`agent skills` / `agent skill`). `marketplace.py` verifies + installs skills (Layer 27); `resolver.py` resolves `## Requires` into a deps-first install order (Layer 28). |
+| `marketplace/` | Skill marketplace / "remote" registry: `index.json` pins a SHA256 over each installable skill — `error_budget` (standalone) and `capacity_planner` (requires error_budget + storage_health_check). `agent marketplace-install` resolves deps, verifies each hash, then installs into `skills/`. |
 | `context/` | `manager.py` (tiktoken token budgeting) + `rag.py` (RAG over `docs/` via ChromaDB). |
 | `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
 | `scripts/` | OpenShell local-dev tooling (not part of the agent): `setup-openshell.sh` (gateway container w/ full mTLS on macOS + Docker Desktop), `create-sandbox.sh` (one-command sandbox + health check), `teardown-openshell.sh` (full reset), `benchmark-openshell.sh` (host-vs-sandbox latency benchmark behind the "Isolation overhead" numbers). |

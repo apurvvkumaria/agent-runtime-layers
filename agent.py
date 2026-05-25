@@ -240,20 +240,51 @@ def marketplace_list() -> None:
         click.echo(f"    sha256: {s['sha256'][:16]}…\n")
 
 
+@cli.command(name="skill-deps")
+@click.argument("name")
+def skill_deps(name: str) -> None:
+    """Show the resolved dependency graph + install order for a marketplace skill."""
+    from skills.resolver import DependencyError, SkillResolver
+
+    try:
+        res = SkillResolver().resolve(name)
+    except DependencyError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Dependency graph for {name}:")
+    for n, reqs in res.graph.items():
+        deps = ", ".join(f"{r['name']}{r['constraint']}" for r in reqs) or "(none)"
+        click.echo(f"  {n} requires: {deps}")
+    click.echo(f"\nAlready satisfied: {', '.join(res.already_satisfied) or '(none)'}")
+    click.echo(f"Install order:     {' → '.join(res.order)}")
+
+
 @cli.command(name="marketplace-install")
 @click.argument("name")
 def marketplace_install(name: str) -> None:
-    """Verify (SHA256) and install a marketplace skill into skills/, then load it."""
+    """Resolve dependencies, then verify (SHA256) + install each in order, and load."""
     from skills.marketplace import IntegrityError, SkillMarketplace
+    from skills.resolver import DependencyError, SkillResolver
 
+    mp = SkillMarketplace()
     try:
-        info = SkillMarketplace().install(name)
+        res = SkillResolver(marketplace=mp).resolve(name)
+    except DependencyError as exc:
+        raise click.ClickException(f"dependency resolution failed — {exc}") from exc
+
+    if res.already_satisfied:
+        click.echo(f"Already satisfied: {', '.join(res.already_satisfied)}")
+    if len(res.order) > 1:
+        click.echo(f"Resolved install order: {' → '.join(res.order)}")
+    try:
+        for dep in res.order:
+            info = mp.install(dep)
+            tag = " (dependency)" if dep != name else ""
+            click.echo(f"✓ verified (sha256) and installed {info['name']} v{info['version']}{tag}")
     except IntegrityError as exc:
         raise click.ClickException(f"refused to install — {exc}") from exc
     except (KeyError, FileNotFoundError) as exc:
         raise click.ClickException(str(exc)) from exc
-    click.echo(f"✓ verified (sha256) and installed {info['name']} v{info['version']} → skills/{info['name']}/")
-    click.echo("  Discovered by the registry — `agent skills` now lists it and the agent can call it.")
+    click.echo("  Discovered by the registry — `agent skills` now lists them and the agent can call them.")
 
 
 @cli.command()

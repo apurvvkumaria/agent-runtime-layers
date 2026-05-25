@@ -7,6 +7,13 @@
       "path": "error_budget",
       "description": "Compute the monthly error budget (allowed downtime) for a target availability percent.",
       "sha256": "dcc29b3eca0f28794b05d2fc6df06ef349e3dd72352a1a745a24ad7ec7125c59"
+    },
+    {
+      "name": "capacity_planner",
+      "version": "1.0.0",
+      "path": "capacity_planner",
+      "description": "Capacity plan: a cluster's live SLA health plus the error budget for a 99.9% target. Requires error_budget + storage_health_check.",
+      "sha256": "32e1d5a3597b0f1b91ca094afedc76a3a3f48605e1c3d12fb275bd333648d915"
     }
   ]
 }

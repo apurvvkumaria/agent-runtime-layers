@@ -39,6 +39,20 @@ def _first_line(text: str, title: str, default: str = "") -> str:
     return body.splitlines()[0].strip() if body else default
 
 
+def _parse_requires(text: str) -> list[dict]:
+    """Parse the `## Requires` bullets into {name, constraint} (Layer 28).
+
+    e.g. `- error_budget >= 1.0.0` -> {"name": "error_budget", "constraint": ">=1.0.0"};
+    a bare `- storage_health_check` -> constraint "" (any version).
+    """
+    requires = []
+    for line in _section(text, "Requires").splitlines():
+        m = re.match(r"\s*[-*]\s*`?([A-Za-z0-9_]+)`?\s*((?:[<>=!]=?)\s*[0-9][0-9.]*)?", line)
+        if m:
+            requires.append({"name": m.group(1), "constraint": re.sub(r"\s+", "", m.group(2) or "")})
+    return requires
+
+
 def _parse_skill_md(path: Path) -> dict:
     text = path.read_text(encoding="utf-8")
     tools_block = _section(text, "Tools used internally")
@@ -55,6 +69,7 @@ def _parse_skill_md(path: Path) -> dict:
         "deprecated": status == "deprecated" or bool(deprecation),
         "replaced_by": replaced.group(1) if replaced else None,
         "remove_after": remove_after.group(1) if remove_after else None,
+        "requires": _parse_requires(text),
     }
 
 
@@ -89,6 +104,7 @@ class SkillRegistry:
                 "deprecated": s["meta"]["deprecated"],
                 "replaced_by": s["meta"]["replaced_by"],
                 "remove_after": s["meta"]["remove_after"],
+                "requires": s["meta"]["requires"],
             }
             for n, s in self._skills.items()
         ]
