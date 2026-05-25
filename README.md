@@ -191,9 +191,57 @@ uv run pytest                # unit + integration tests (fast, no API key)
 uv run python agent.py test  # tests + evals + summary (evals make real LLM calls)
 ```
 
-Two kinds of checks: **tests** (`tests/`) assert deterministic plumbing with the LLM
-stubbed; **evals** (`evals/`) assert probabilistic agent behavior — deterministic tool/answer
-cases, plus LLM-as-judge relevance scores written to LangFuse.
+Two kinds of checks for two kinds of failure. **Tests** (`tests/`) assert deterministic
+plumbing with the LLM stubbed — tool math, API request/response shapes, memory wiring — so
+they're fast, free, and run anywhere. **Evals** (`evals/`) assert *probabilistic agent
+behavior*, which you can't unit-test: the agent runs for real (real Claude calls) and only the
+**grading** is automated.
+
+**What the evals check:**
+
+- **Tool correctness + substring** — `deterministic_evals.py` (deepeval, no judge): five
+  `LLMTestCase`s, each a `(question, expected_tool, expected_substring)`. *"What is 25 times
+  4?"* must call `calculator` and contain `100`; *"Show the storage metrics for cluster
+  prod-east-1"* must call `storage_metrics` and contain `prod-east-1`; *"…what year was the
+  Eiffel Tower completed?"* must call `duckduckgo_search` and contain `1889`. A case **passes
+  iff the expected tool was actually invoked AND the answer contains the expected string** —
+  `ToolCorrectnessMetric` (threshold 0.5) checks a callback-recorded list of tool calls against
+  the expected tool, and the custom `SubstringMetric` checks the text. Both are deterministic,
+  so they're cheap and repeatable even though the agent ran for real.
+- **Answer relevancy (LLM-as-judge)** — `langfuse_evals.py`: open-ended questions graded by
+  deepeval's `AnswerRelevancyMetric`, **judged by Claude** (a `DeepEvalBaseLLM` wrapper, so no
+  OpenAI key), threshold 0.5. The 0–1 score is written back onto the question's **LangFuse
+  trace** with the judge's reasoning as the comment.
+- **Behavioral comparisons** — `memory_comparison.py` / `rag_comparison.py`: the
+  token/grounding measurements in [Numbers](#numbers) (memory footprint is LLM-free; RAG uses
+  raw LLM calls).
+
+**What pass/fail looks like.** `agent test` runs pytest, then both eval suites, then a summary:
+
+```
+[PASS] What is 25 times 4?
+        ToolCorrectness: 1.00 (used ['calculator'], want calculator)
+        Substring: 1.00 (answer contains '100')
+...
+[trace 154ffef…] answer_relevancy=1.00  Q: What is 15 times 15?
+
+========== SUMMARY ==========
+Unit tests: 12/12 passed
+Deterministic evals: 5/5 passed
+LangFuse evals: avg answer_relevancy 1.00/1.0
+```
+
+A `FAIL` names the offending metric — e.g. the agent answered from memory without calling the
+calculator (`ToolCorrectness: 0.00 (used [], want calculator)`), or the answer drifted off the
+expected value (`Substring: 0.00`). That distinction matters: a tool-correctness failure is a
+*routing* regression, a substring/relevancy failure is an *output* regression.
+
+**In LangFuse**, each eval question is one trace: the agent's LLM and tool calls appear as
+nested spans (latency + token counts per call), with the `answer_relevancy` score attached at
+the trace level and the judge's reason as a comment — so you can sort/filter for low-scoring
+traces and click into exactly which step went wrong. Failed runs are also flagged `0` from the
+dead-letter queue (Layer 19), so a *broken* run and a *low-quality* run show up on the same
+dashboard.
 
 **Cadence in production.** Today, evals run on demand via `agent test`. For a production
 deployment, the cadence would tier: deterministic plumbing tests on every commit (already in
@@ -335,6 +383,25 @@ Import direction is one-way: `tools`/`hooks` ← `core` ← `agent`/`api`/`mcp_i
 
 This is a learning project, not a production system — the `storage_metrics` tool returns
 synthetic data, and answers depend on live web search.
+
+## Roadmap — what Layer 22+ looks like
+
+Twenty-one layers is a waypoint, not a ceiling. Each layer added one runtime capability; the
+next ones are the concerns that turn a single-tenant demo into a *service*, and they slot onto
+the same spine (front door → core → tools/memory) rather than requiring rewrites:
+
+- **Multi-tenancy & isolation** — per-tenant memory namespaces, sessions, and vector
+  collections. Today memory is one shared file (CLI) or a per-`session_id` dict (API); a real
+  deployment needs tenant-scoped stores and quotas.
+- **AuthN / AuthZ** — API keys or OIDC on the FastAPI + MCP front doors, plus per-tenant tool
+  allowlists (which tenant may call `storage_metrics`, for which cluster).
+- **Rate limiting & backpressure** — per-tenant request/token limits at the front door, feeding
+  back into the heartbeat loop so autonomous work yields to interactive traffic.
+- **Cost caps & accounting** — the context manager already *counts* tokens (Layer 14); this
+  turns counting into *enforcement* (reject/trim before the LLM call) and attributes spend
+  per-tenant via the existing LangFuse traces.
+- **Human-in-the-loop approvals** — gating high-impact tool calls; the OpenShell sandbox
+  (Layer 21) is the isolation primitive this would build on.
 
 ## License
 
