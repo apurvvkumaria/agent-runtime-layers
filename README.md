@@ -2,8 +2,10 @@
 
 ![Layers](https://img.shields.io/badge/layers-14-blue)
 
-A small ReAct research agent — **Claude, LangChain, and LangGraph** — built up in
-**fourteen deliberate layers**, each adding one agent-runtime capability. It's a hands-on project for
+A small research agent — **Claude, LangChain, and LangGraph** — built up in
+**fourteen deliberate layers**, each adding one agent-runtime capability. The core is a
+ReAct agent; a later layer adds a LangGraph multi-agent pipeline as a contrasting paradigm.
+It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
 calling, memory, streaming, lifecycle hooks, production tracing, a CLI, a REST API,
 tests + evals, MCP (Model Context Protocol) in both directions, file/LangFuse-based
