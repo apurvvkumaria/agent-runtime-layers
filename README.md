@@ -375,7 +375,7 @@ reusing warm sandboxes (the warm number is ≤ host). So the latency optimizatio
 | `skills/` | `research_and_summarize.py` — a `@tool` that composes search + metrics + summarization (`agent skill`). |
 | `context/` | `manager.py` (tiktoken token budgeting) + `rag.py` (RAG over `docs/` via ChromaDB). |
 | `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
-| `scripts/` | OpenShell local-dev tooling (not part of the agent): `setup-openshell.sh` (gateway container w/ full mTLS on macOS + Docker Desktop), `create-sandbox.sh` (one-command sandbox + health check), `teardown-openshell.sh` (full reset). |
+| `scripts/` | OpenShell local-dev tooling (not part of the agent): `setup-openshell.sh` (gateway container w/ full mTLS on macOS + Docker Desktop), `create-sandbox.sh` (one-command sandbox + health check), `teardown-openshell.sh` (full reset), `benchmark-openshell.sh` (host-vs-sandbox latency benchmark behind the "Isolation overhead" numbers). |
 | `sandbox_runner.py` | Layer 21 — drives the `openshell` CLI to run `agent.py ask` inside a policy-constrained sandbox (`agent sandbox-ask`/`sandbox-info`). |
 | `openshell/` | Layer 21 config + docs (not a Python package, so it can't shadow the `openshell` SDK): `policy.yaml` (sandbox network/fs policy), `setup.md` (macOS gateway setup), `agent-sandbox/` (deps-baked sandbox image). |
 | `assets/` | Architecture diagrams (SVG) embedded in this README. |
