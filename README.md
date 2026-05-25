@@ -1,17 +1,17 @@
 # langchain-agent-layers
 
-A small ReAct research agent — **Claude + LangChain** — built up in **twelve deliberate
+A small ReAct research agent — **Claude + LangChain** — built up in **thirteen deliberate
 layers**, each adding one agent-runtime capability. It's a hands-on project for
 understanding how agent frameworks actually work under the hood: the agent loop, tool
 calling, memory, streaming, lifecycle hooks, production tracing, a CLI, a REST API,
 tests + evals, MCP (Model Context Protocol) in both directions, file/LangFuse-based
-prompt management, and vector-store memory.
+prompt management, vector-store memory, and a LangGraph multi-agent pipeline.
 
 ```bash
 uv run python agent.py ask "What is a Merkle tree?"
 ```
 
-## The twelve layers
+## The thirteen layers
 
 The agent was built incrementally; each layer adds one capability on top of the last.
 
@@ -29,6 +29,7 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **10 — MCP integration** | Speak MCP both ways | **Client:** wrap the official filesystem MCP server as the `filesystem` tool (sandboxed to `docs/`). **Server:** expose `ask_agent` / `get_storage_metrics` / `calculate` over MCP via FastMCP (`agent mcp-serve`). As a client the agent consumes any MCP server as a tool; as a server the whole agent becomes a tool other MCP clients can call. |
 | **11 — Prompt management** | Prompts as managed assets | System prompts live in `prompts/*.md` (loaded by `load_prompt`), not string literals in code. The single-shot prompt is fetched from LangFuse first (`react-agent-prompt`) with the local file as fallback; `agent sync-prompt` pushes the local copy to LangFuse as a new version. Prompts become reviewable in diffs and versionable without a redeploy. |
 | **12 — Vector-store memory** | Bounded memory via semantic retrieval | `build_chat_agent` defaults to `VectorStoreMemory`: each turn is embedded and stored, and only the top-k *similar* past turns are replayed into the prompt — so history tokens stay bounded as the conversation grows (vs. buffer memory, which re-sends everything). `agent memory-stats` and `evals/memory_comparison.py` quantify it (~65% fewer history tokens at 8+ turns). |
+| **13 — Multi-agent (LangGraph)** | A graph of cooperating agents | A `StateGraph` of five agent nodes — orchestrator (routes research/calculate/both), research, calculator, writer, reviewer — with conditional edges and a reviewer→research retry loop gated on a quality score. `agent pipeline "..."` streams each node. A fixed, inspectable topology vs. the ReAct loop's per-turn tool choice. |
 
 ## How it works
 
@@ -63,6 +64,7 @@ an `Observation:` and re-prompts — looping until the model emits `Final Answer
 | `numpy` | Numeric support across the ML stack. |
 | `chromadb` | Persistent vector store for conversation memory (`./chroma_db/`). |
 | `sentence-transformers` | Local `all-MiniLM-L6-v2` embeddings (free, no API key) for vector memory. |
+| `langgraph` | The multi-agent pipeline — a `StateGraph` with conditional edges and a retry loop. |
 
 Managed with [uv](https://docs.astral.sh/uv/). Requires Python 3.13+ on a native **arm64**
 mac (or linux/win) — `torch`/`onnxruntime` (for the vector-memory stack) have no
@@ -100,6 +102,7 @@ uv run python agent.py mcp-serve --port 3000  # start the MCP server (SSE)
 uv run python agent.py sync-prompt         # push local single-shot prompt to LangFuse
 uv run python agent.py memory-stats        # vector-store turns + estimated token savings
 uv run python agent.py memory-clear        # wipe all stored turns (use --yes to skip prompt)
+uv run python agent.py pipeline "..."      # multi-agent LangGraph research pipeline
 uv run python agent.py test                # run tests + evals, print a summary
 ```
 
@@ -166,6 +169,7 @@ version. Editing a prompt is a behavior change — re-run `agent test` after.
 | `mcp_integration/` | MCP both ways — `client.py` (filesystem server → `filesystem` tool), `server.py` (agent → MCP tools). Named `mcp_integration` to avoid shadowing the `mcp` SDK. |
 | `prompts/` | System prompts as markdown (`single_shot_agent`, `chat_agent`, `research_agent`, `storage_agent`) + `loader.py`. |
 | `memory/` | `vector_store.py` — `VectorStoreMemory` with top-k semantic retrieval (sentence-transformers embeddings + ChromaDB). |
+| `langgraph_agents/` | `pipeline.py` — a LangGraph `StateGraph` of five agent nodes with a quality-gated retry loop (`agent pipeline`). |
 | `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
 | `tests/` | pytest suite — tool units + API integration (LLM stubbed). |
 | `evals/` | Real-agent behavioral evals: deterministic cases + LLM-as-judge scoring. |

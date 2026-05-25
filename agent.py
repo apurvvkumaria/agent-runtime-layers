@@ -245,6 +245,21 @@ def memory_stats() -> None:
         click.echo("(no turns stored yet — run `agent chat` to populate the store)")
 
 
+@cli.command()
+@click.argument("question")
+def pipeline(question: str) -> None:
+    """Run the multi-agent LangGraph research pipeline on QUESTION."""
+    from langgraph_agents.pipeline import run_pipeline
+
+    try:
+        result = run_pipeline(question, on_node=lambda name: click.echo(f"[{name}]"))
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"\nQuality score: {result['quality_score']}")
+    click.echo(f"\nFinal answer:\n{result['final_answer']}")
+
+
 @cli.command(name="memory-clear")
 @click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
 def memory_clear(yes: bool) -> None:
