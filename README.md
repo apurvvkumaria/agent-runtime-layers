@@ -11,7 +11,7 @@ calling, memory, streaming, lifecycle hooks, production tracing, a CLI, a REST A
 tests + evals, MCP (Model Context Protocol) in both directions, file/LangFuse-based
 prompt management, vector-store memory, a LangGraph multi-agent pipeline, token-budget
 context management with RAG, a LangGraph-vs-Strands comparison, age-based memory decay,
-and a streaming multi-agent pipeline.
+and a streaming multi-agent graph.
 
 ```bash
 uv run python agent.py ask "What is a Merkle tree?"
@@ -39,7 +39,7 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **14 — Context management** | Budget the window; ground in docs | A `ContextManager` (tiktoken) allocates a token budget across sources and truncates each to its share; RAG over `docs/` (ChromaDB + sentence-transformers) is auto-injected for storage/latency questions. `agent context-stats "..."` previews the allocation; `evals/rag_comparison.py` shows token cost vs. answer quality (with vs. without RAG). |
 | **15 — Strands + framework comparison** | The same pipeline, model-driven | The research pipeline rebuilt with Strands Agents — research + calculator specialists exposed to an orchestrator via `Agent.as_tool()`, with *no* explicit graph (the model decides routing). `agent pipeline --framework {langgraph,strands,both}` runs either; `agent compare "..."` tabulates nodes/steps, tokens, time, and quality. Fixed graph (cheap, predictable) vs. emergent model-driven orchestration (flexible, more LLM round-trips). |
 | **16 — Memory decay** | Old context compresses, then expires | Each stored turn carries a tier that downgrades with age: `full` (<3d, verbatim) → `summary` (3-30d, one-sentence LLM summary) → `marker` (30-90d, topic tag) → `archived` (>90d, deleted). `agent memory-decay` ages turns out; `memory-stats` shows the breakdown. Keeps the retrievable store bounded without a hard cutoff — recent stays sharp, old blurs to a gist, then drops. |
-| **17 — Streaming the pipeline** | Live node progress + token-by-token answer | `agent pipeline` (LangGraph) streams via multi-mode `astream(["updates","messages"])`: node names print as they complete, and the writer node's answer streams token-by-token (filtered by `langgraph_node`). Layer 4 streamed the single ReAct loop; this streams a multi-node graph. |
+| **17 — Streaming the pipeline** | Live node progress + token-by-token answer | `agent pipeline` (LangGraph) streams via multi-mode `astream(["updates","messages"])`: node names print as they complete, and the writer node's answer streams token-by-token (filtered by `langgraph_node`). Layer 4 streamed the single ReAct loop; this streams a multi-agent graph. |
 
 ## How it works
 
