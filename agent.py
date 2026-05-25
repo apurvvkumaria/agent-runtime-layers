@@ -226,6 +226,38 @@ def test() -> None:
     run_all()
 
 
+@cli.command(name="eval-cache-stats")
+def eval_cache_stats() -> None:
+    """Show the eval judge-response cache: entries, hit rate, tokens/cost saved, disk size."""
+    from evals.cache import get_cache
+
+    cache = get_cache()
+    s = cache.stats()
+    click.echo(f"Eval cache: {cache.path}")
+    click.echo(f"  entries on disk:    {s['entries']}")
+    click.echo(f"  tokens represented: {s['cached_tokens']} (~${s['cached_cost']:.4f} to recompute)")
+    click.echo(f"  size on disk:       {s['disk_bytes']} bytes")
+    if s["total"]:
+        click.echo(
+            f"  this process:       {s['hits']} hits / {s['misses']} misses "
+            f"({s['hit_rate'] * 100:.0f}% hit rate), {s['tokens_saved']} tokens saved "
+            f"(~${s['cost_saved']:.4f})"
+        )
+    else:
+        click.echo("  (no judge calls this process — run `agent test` or `eval-cache-demo`)")
+
+
+@cli.command(name="eval-cache-demo")
+def eval_cache_demo() -> None:
+    """Judge the same cases twice to show the cache turning misses into zero-token hits."""
+    from evals.cache_demo import run as run_demo
+
+    try:
+        run_demo()
+    except Exception as exc:  # noqa: BLE001
+        raise click.ClickException(str(exc)) from exc
+
+
 @cli.command()
 @click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind.")
 @click.option("--port", default=8000, show_default=True, type=int, help="Port to listen on.")

@@ -9,6 +9,10 @@ Each case becomes a deepeval `LLMTestCase` scored by two deterministic metrics
 The agent itself still runs for real (real Claude calls); only the grading is
 deterministic.
 
+Note (Layer 22): there are no LLM-as-judge calls here to cache — grading is
+deterministic by design. The judge-response cache applies to the relevancy judge
+in `langfuse_evals.py` (`AnswerRelevancyMetric` → `ClaudeJudge`).
+
 Run directly:  uv run python evals/deterministic_evals.py
 """
 

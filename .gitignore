@@ -31,3 +31,6 @@ chroma_db/
 tasks.json
 # DLQ runtime state (keep the package code, ignore the JSON stores)
 dlq/*.json
+
+# Eval response cache (Layer 22) — runtime state
+evals/.cache/

@@ -12,6 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import pytest  # noqa: E402
 
+from evals.cache import get_cache  # noqa: E402
 from evals.deterministic_evals import run as run_deterministic  # noqa: E402
 from evals.langfuse_evals import run as run_langfuse  # noqa: E402
 
@@ -51,6 +52,11 @@ def main() -> None:
         print("LangFuse evals: skipped (not configured)")
     else:
         print(f"LangFuse evals: avg answer_relevancy {lf_avg:.2f}/1.0")
+
+    # Layer 22: what the judge-response cache saved this run.
+    c = get_cache().stats()
+    print(f"Cache: {c['hits']} hits, {c['misses']} misses, {c['tokens_saved']} tokens saved "
+          f"(~${c['cost_saved']:.4f})")
 
 
 if __name__ == "__main__":
