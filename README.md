@@ -57,6 +57,18 @@ The agent was built incrementally; each layer adds one capability on top of the 
 | **28 — Skill dependency resolution** | Installing a skill pulls in its dependencies, in order | Skills declare `## Requires` (other skills + optional semver constraints). `SkillResolver` walks the graph for a marketplace target and returns the install order (deps first), partitioning each into *already satisfied* (installed, via the registry) vs *to install* (from the marketplace), and raising on a missing/unsatisfiable dep or a cycle. `marketplace-install` resolves then installs each in order (still hash-verified); `agent skill-deps <name>` shows the graph. New skill `capacity_planner` requires `error_budget` + `storage_health_check`. A skill registry is a package ecosystem, so it gets a package manager's job — graph, constraints, topological order, cycle detection — across two satisfaction sources (installed core vs. marketplace). Verified: order `error_budget → capacity_planner`, then the composite runs. |
 | **29 — Skill hot-reloading** | Pick up edited / newly-installed skills without a restart | `importlib.import_module` returns the cached module, so a running process won't see an edited or marketplace-installed skill until it's `importlib.reload()`-ed. `SkillRegistry` fingerprints each skill; `reload()` reloads the changed ones, imports added ones, drops removed — returning the change-set (callers re-fetch via `as_tools()`/`get_skill()`). `agent skill-reload` reports what changed since last load; `agent skill-reload-demo` proves a skill's behavior swaps live. The concept: Python's module cache vs. live code — a long-running agent must deliberately re-exec changed modules. Verified: demo skill returns v1 → edit → reload → v2, no restart; a marketplace install shows up as `reload() added`. |
 
+## How this maps to NemoClaw
+
+These 29 layers are a from-scratch rebuild of the patterns in **NemoClaw** —
+NVIDIA's batteries-included agent stack (**OpenShell** sandbox + **OpenClaw** agent
++ **NeMo/Nemotron** inference). [`docs/nemoclaw_mapping.md`](docs/nemoclaw_mapping.md)
+maps every layer to its NemoClaw equivalent, and calls out what NemoClaw adds
+(multi-channel I/O, local GPU inference, managed onboarding) vs. what this project
+adds on top (eval response caching, a quality-gated retry loop, a dependency
+resolver). The short version: same architectural patterns, built here to
+understand them rather than install them — with Claude standing in for a local
+Nemotron, and the agent actually running inside a real OpenShell sandbox (Layer 21).
+
 ## Architecture
 
 The runtime data flow: every front door — the Click **CLI**, the FastAPI **REST API**,
@@ -385,7 +397,7 @@ reusing warm sandboxes (the warm number is ≤ host). So the latency optimizatio
 | `skills/` | OpenClaw-pattern skills (Layer 23): each `skills/<name>/` has `SKILL.md` + `skill.py` (`async def <name>(arg, ctx=None)`) + `policy.yaml`; `context.py` (`SkillContext`) and `registry.py` (`SkillRegistry`) discover them and expose each as a tool. `SkillContext` carries `call_tool` + `call_skill` (Layer 26 composition). Each `SKILL.md` carries `## Version` + `## Status` (Layer 25); the registry warns on deprecated skills and hides them from `get_tools()`. Skills: `research_and_summarize`, `storage_health_check`, `cluster_briefing` (composes the prior two), and the deprecated `storage_sla_report` (`agent skills` / `agent skill`). `marketplace.py` verifies + installs skills (Layer 27); `resolver.py` resolves `## Requires` into a deps-first install order (Layer 28); `SkillRegistry.reload()` + `reload_demo.py` hot-reload edited/installed skills (Layer 29). |
 | `marketplace/` | Skill marketplace / "remote" registry: `index.json` pins a SHA256 over each installable skill — `error_budget` (standalone) and `capacity_planner` (requires error_budget + storage_health_check). `agent marketplace-install` resolves deps, verifies each hash, then installs into `skills/`. |
 | `context/` | `manager.py` (tiktoken token budgeting) + `rag.py` (RAG over `docs/` via ChromaDB). |
-| `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. |
+| `docs/` | Markdown read by the `filesystem` tool; the MCP filesystem server's only allowed directory. Includes `nemoclaw_mapping.md` (the 29-layers → NemoClaw mapping). |
 | `scripts/` | OpenShell local-dev tooling (not part of the agent): `setup-openshell.sh` (gateway container w/ full mTLS on macOS + Docker Desktop), `create-sandbox.sh` (one-command sandbox + health check), `teardown-openshell.sh` (full reset), `benchmark-openshell.sh` (host-vs-sandbox latency benchmark behind the "Isolation overhead" numbers). |
 | `sandbox_runner.py` | Layer 21 — drives the `openshell` CLI to run `agent.py ask` inside a policy-constrained sandbox (`agent sandbox-ask`/`sandbox-info`). |
 | `openshell/` | Layer 21 config + docs (not a Python package, so it can't shadow the `openshell` SDK): `policy.yaml` (sandbox network/fs policy), `setup.md` (macOS gateway setup), `agent-sandbox/` (deps-baked sandbox image). |
