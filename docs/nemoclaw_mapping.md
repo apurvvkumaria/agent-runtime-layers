@@ -76,14 +76,3 @@ Claude as the model instead of a local Nemotron.
 3. **A skill dependency resolver** — topological install order with version
    constraints and cycle detection, resolving across installed-core vs.
    marketplace sources.
-
-## The Bridge Story
-
-> I built a simplified version of the NemoClaw stack from scratch across 29
-> layers. Starting from a bare ReAct loop, I added every production concern:
-> memory with decay, observability via OTEL-style tracing, autonomous operation,
-> a skill ecosystem with versioning / composition / marketplace / hot-reload, and
-> finally ran the agent inside an actual OpenShell sandbox. The things NemoClaw
-> adds that I'm simulating are multi-channel integration and local GPU inference
-> (I reason with Claude instead of a local Nemotron). The architectural patterns
-> are identical — I built them to understand them, not just install them.
