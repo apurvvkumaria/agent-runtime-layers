@@ -41,3 +41,7 @@ evals/.cache/
 # Marketplace-installed skills (Layer 27) — source of truth is marketplace/
 skills/error_budget/
 skills/capacity_planner/
+
+# Skill hot-reload state (Layer 29)
+skills/.skill_fingerprints.json
+skills/_hotreload_demo/

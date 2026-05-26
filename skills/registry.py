@@ -17,6 +17,7 @@ callers — and emit a `[deprecated]` warning when invoked.
 from __future__ import annotations
 
 import importlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -24,8 +25,10 @@ from pathlib import Path
 from langchain_core.tools import Tool
 
 from skills.context import run_coro
+from skills.marketplace import package_hash  # reused as a per-skill source fingerprint
 
 _SKILLS_DIR = Path(__file__).resolve().parent
+_FINGERPRINTS = _SKILLS_DIR / ".skill_fingerprints.json"  # snapshot for `agent skill-reload`
 
 
 def _section(text: str, title: str) -> str:
@@ -79,19 +82,62 @@ class SkillRegistry:
     def __init__(self) -> None:
         self._skills: dict[str, dict] = {}
 
+    @staticmethod
+    def _skill_dirs() -> dict[str, Path]:
+        """Map skill name -> dir for every `skills/<name>/` with SKILL.md + skill.py."""
+        out = {}
+        for sub in sorted(p for p in _SKILLS_DIR.iterdir() if p.is_dir()):
+            if (sub / "SKILL.md").exists() and (sub / "skill.py").exists():
+                out[sub.name] = sub
+        return out
+
+    def _register(self, name: str, sub: Path) -> bool:
+        """(Re)load one skill into the registry, recording its module + fingerprint."""
+        module = importlib.import_module(f"skills.{name}.skill")  # cached if already imported
+        fn = getattr(module, name, None)
+        if fn is None:  # convention: skill.py defines a function named after its dir
+            return False
+        self._skills[name] = {
+            "fn": fn,
+            "meta": _parse_skill_md(sub / "SKILL.md"),
+            "module": module,
+            "fingerprint": package_hash(sub),
+        }
+        return True
+
     def auto_discover(self) -> "SkillRegistry":
         """Scan `skills/` for `<name>/SKILL.md` + `skill.py`, importing each."""
-        for sub in sorted(p for p in _SKILLS_DIR.iterdir() if p.is_dir()):
-            md, py = sub / "SKILL.md", sub / "skill.py"
-            if not (md.exists() and py.exists()):
-                continue
-            meta = _parse_skill_md(md)
-            module = importlib.import_module(f"skills.{sub.name}.skill")
-            fn = getattr(module, sub.name, None)
-            if fn is None:  # convention: skill.py defines a function named after its dir
-                continue
-            self._skills[sub.name] = {"fn": fn, "meta": meta}
+        for name, sub in self._skill_dirs().items():
+            self._register(name, sub)
         return self
+
+    def reload(self) -> dict:
+        """Hot-reload changed skills in-process (Layer 29).
+
+        Re-scans `skills/` and, for each skill, compares a fresh source fingerprint
+        to the one held in memory: changed -> `importlib.reload()` (the cached module
+        is what would otherwise hide an edit/new install), new -> import, gone ->
+        drop. Returns the change-set. Long-running processes (server, heartbeat,
+        REPL) call this to pick up edited or marketplace-installed skills without a
+        restart; callers then re-fetch tools via `as_tools()`/`get_skill()`.
+        """
+        changes = {"added": [], "reloaded": [], "removed": [], "unchanged": []}
+        importlib.invalidate_caches()  # so a just-installed skill dir is discoverable
+        present = self._skill_dirs()
+        for name in [n for n in self._skills if n not in present]:
+            del self._skills[name]
+            changes["removed"].append(name)
+        for name, sub in present.items():
+            if name not in self._skills:
+                if self._register(name, sub):
+                    changes["added"].append(name)
+            elif self._skills[name].get("fingerprint") != package_hash(sub):
+                importlib.reload(self._skills[name]["module"])  # re-exec the edited module
+                self._register(name, sub)  # re-bind fn + re-parse meta + new fingerprint
+                changes["reloaded"].append(name)
+            else:
+                changes["unchanged"].append(name)
+        return changes
 
     def list_skills(self) -> list[dict]:
         return [
@@ -180,3 +226,29 @@ class SkillRegistry:
         existing = list(getattr(executor, "tools", []))
         executor.tools = existing + self.as_tools(include_deprecated=include_deprecated)
         return executor
+
+
+def reload_report(snapshot_path: Path = _FINGERPRINTS) -> dict:
+    """Diff current skill fingerprints against the last snapshot on disk (Layer 29).
+
+    Backs `agent skill-reload`: across CLI runs (each a fresh process) it reports
+    which skills changed / were added / removed on disk since the last load — i.e.
+    what an in-process `SkillRegistry.reload()` would pick up — then updates the
+    snapshot. (Within one process, use `SkillRegistry.reload()`.)
+    """
+    current = {name: package_hash(sub) for name, sub in SkillRegistry._skill_dirs().items()}
+    old = {}
+    if snapshot_path.exists():
+        try:
+            old = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            old = {}
+    changes = {
+        "added": sorted(n for n in current if n not in old),
+        "changed": sorted(n for n in current if n in old and old[n] != current[n]),
+        "removed": sorted(n for n in old if n not in current),
+        "unchanged": sorted(n for n in current if n in old and old[n] == current[n]),
+        "first_run": not snapshot_path.exists(),
+    }
+    snapshot_path.write_text(json.dumps(current, indent=2, sort_keys=True), encoding="utf-8")
+    return changes

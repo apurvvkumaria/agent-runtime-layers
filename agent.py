@@ -287,6 +287,34 @@ def marketplace_install(name: str) -> None:
     click.echo("  Discovered by the registry — `agent skills` now lists them and the agent can call them.")
 
 
+@cli.command(name="skill-reload")
+def skill_reload() -> None:
+    """Report which skills changed/added/removed on disk since the last load."""
+    from skills.registry import reload_report
+
+    c = reload_report()
+    if c["first_run"]:
+        click.echo(f"First load — snapshotting {len(c['added'])} skill(s): {', '.join(c['added'])}")
+        return
+    if not (c["added"] or c["changed"] or c["removed"]):
+        click.echo("No skill changes since last load.")
+        return
+    if c["changed"]:
+        click.echo(f"changed (would hot-reload): {', '.join(c['changed'])}")
+    if c["added"]:
+        click.echo(f"added:   {', '.join(c['added'])}")
+    if c["removed"]:
+        click.echo(f"removed: {', '.join(c['removed'])}")
+
+
+@cli.command(name="skill-reload-demo")
+def skill_reload_demo() -> None:
+    """Demo: edit a skill's source and hot-reload it live (no restart)."""
+    from skills.reload_demo import run as run_demo
+
+    run_demo()
+
+
 @cli.command()
 def history() -> None:
     """Show the last 10 conversation turns from saved memory."""
